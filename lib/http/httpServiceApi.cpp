@@ -152,7 +152,7 @@ fnHttpApi::response h_drives(const request &)
 
         std::string path = Config.get_mount_path(i);
         cJSON_AddStringToObject(slot, "path", path.c_str());
-        cJSON_AddBoolToObject(slot, "mounted", !path.empty());
+        cJSON_AddBoolToObject(slot, "mounted", theFuji->get_disk(i)->fileh != nullptr);
 
         fnConfig::mount_mode_t mode = Config.get_mount_mode(i);
         cJSON_AddStringToObject(slot, "mode", mode == fnConfig::MOUNTMODE_WRITE ? "w" : "r");
@@ -187,7 +187,7 @@ fnHttpApi::response h_drive_slot(const request &r)
 
     std::string path = Config.get_mount_path(slot);
     cJSON_AddStringToObject(root, "path", path.c_str());
-    cJSON_AddBoolToObject(root, "mounted", !path.empty());
+    cJSON_AddBoolToObject(root, "mounted", theFuji->get_disk(slot)->fileh != nullptr);
 
     fnConfig::mount_mode_t mode = Config.get_mount_mode(slot);
     cJSON_AddStringToObject(root, "mode", mode == fnConfig::MOUNTMODE_WRITE ? "w" : "r");
@@ -474,7 +474,7 @@ fnHttpApi::response h_printer_status(const request &)
     }
 
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddBoolToObject(root, "enabled", true);
+    cJSON_AddBoolToObject(root, "enabled", Config.get_printer_enabled());
     cJSON_AddStringToObject(root, "model", emu->modelname());
     cJSON_AddBoolToObject(root, "ready", ready);
     cJSON_AddBoolToObject(root, "has_output", sz > 0);
@@ -493,11 +493,8 @@ fnHttpApi::response h_printer_clear(const request &)
         return json_error("printer not available", 400);
 
     printer_emu *emu = printer->getPrinterPtr();
-    emu->closeOutput();
+    int remove_result = emu->removeOutput();
     printer->reset_printer();
-
-    // Try to remove the file (may fail on some filesystems)
-    int remove_result = fsFlash.remove("/paper");
     Debug_printf("Attempting to remove /paper, result: %d\n", remove_result);
 
     cJSON *resp = cJSON_CreateObject();

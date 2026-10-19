@@ -5,9 +5,8 @@ fujiError_t NParser::read(std::string &buffer, size_t length)
     fujiError_t err = _protocol->read(length);
     if (err != FUJI_ERROR::NONE)
         return err;
-    buffer.resize(length);
-    std::copy(_protocol->receiveBuffer->begin(),
-              _protocol->receiveBuffer->begin() + buffer.size(), buffer.begin());
+    // The protocol can leave fewer bytes than asked for (translation folds CR/LF).
+    buffer.assign(*_protocol->receiveBuffer, 0, std::min(length, _protocol->receiveBuffer->size()));
     _protocol->receiveBuffer->erase(0, buffer.size());
     return err;
 }
@@ -23,6 +22,9 @@ fujiError_t NParser::write(std::string &buffer)
 
 size_t NParser::available()
 {
+    // A parser set before OPEN has no protocol yet.
+    if (_protocol == nullptr)
+        return 0;
     return _protocol->available();
 }
 
@@ -47,6 +49,11 @@ NetworkStatus NParser::status()
 {
     NetworkStatus ns;
 
+    if (_protocol == nullptr)
+    {
+        ns.error = NDEV_STATUS::NOT_CONNECTED;
+        return ns;
+    }
     _protocol->status(&ns);
     if (_parseError != NDEV_STATUS::SUCCESS)
         ns.error = _parseError;

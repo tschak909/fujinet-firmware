@@ -86,8 +86,6 @@
     #define TARGET_PLATFORM_NAME "CX16"
 #elif defined(BUILD_RC2014)
     #define TARGET_PLATFORM_NAME "RC2014"
-#elif defined(BUILD_H89)
-    #define TARGET_PLATFORM_NAME "H89"
 #elif defined(BUILD_COCO)
     #define TARGET_PLATFORM_NAME "COCO"
 #else
@@ -146,8 +144,18 @@ static void setup_card_detect(gpio_num_t pin)
 {
     // Create a queue to handle card detect event from ISR
     card_detect_evt_queue = xQueueCreate(10, sizeof(gpio_num_t));
+    if (card_detect_evt_queue == nullptr)
+    {
+        // The ISR would crash sending to a null queue - skip the whole feature.
+        Debug_printv("could not create card detect queue, SD hot-swap disabled");
+        return;
+    }
     // Start card detect task
-    xTaskCreate(card_detect_intr_task, "card_detect_intr_task", 6144, (void *)pin, 10, NULL);
+    if (xTaskCreate(card_detect_intr_task, "card_detect_intr_task", 6144, (void *)pin, 10, nullptr) != pdPASS)
+    {
+        Debug_printv("could not create card detect task, SD hot-swap disabled");
+        return;
+    }
     // Enable interrupt for card detection
     fnSystem.set_pin_mode(pin, gpio_mode_t::GPIO_MODE_INPUT, SystemManager::pull_updown_t::PULL_NONE, GPIO_INTR_ANYEDGE);
     // Add the card detect handler
@@ -1262,7 +1270,9 @@ void SystemManager::check_hardware_ver()
     safe_reset_gpio = PIN_BUTTON_C;
     _hardware_version = 1;
 #   elif defined(PINMAP_IEC_NUGGET)
-    #define NO_BUTTONS
+#      ifndef NO_BUTTONS
+#         define NO_BUTTONS
+#      endif
     _hardware_version = 2;
 #   elif defined(PINMAP_IEC_D32PRO)
     #define NO_BUTTONS

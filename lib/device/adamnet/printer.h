@@ -24,7 +24,9 @@ class adamPrinter : public virtualDevice
 protected:
     // SIO THINGS
 #ifdef ESP_PLATFORM
-    TaskHandle_t thPrinter;
+    // FreeRTOS leaves the handle untouched on a failed create, so this must not
+    // start out indeterminate - the destructor tests it before vTaskDelete.
+    TaskHandle_t thPrinter = nullptr;
 #endif /* ESP_PLATFORM */
 
     uint8_t _buffer[16];
@@ -41,7 +43,7 @@ protected:
     printer_emu *_pptr = nullptr;
     FileSystem *_storage = nullptr;
 
-    time_t _last_ms;
+    time_t _last_ms = 0;
     uint8_t _lastaux1;
     uint8_t _lastaux2;
 

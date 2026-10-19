@@ -26,6 +26,8 @@ NetworkProtocolFS::NetworkProtocolFS(std::string *rx_buf, std::string *tx_buf, s
     : NetworkProtocol(rx_buf, tx_buf, sp_buf)
 {
     fileSize = 0;
+    // One TNFS read, and more than most READs ask for.
+    translate_ahead_max = 512;
 }
 
 NetworkProtocolFS::~NetworkProtocolFS()
@@ -41,31 +43,43 @@ fujiError_t NetworkProtocolFS::open(PeoplesUrlParser *urlParser,
     fileSize = 0;
     streamMode = access;
 
-    update_dir_filename(opened_url);
+    update_dir_filename(file_path(urlParser));
 
     if (mount(urlParser) != FUJI_ERROR::NONE)
         return FUJI_ERROR::UNSPECIFIED;
+    opened_path = file_path(urlParser);
 
+    fujiError_t err;
     if (access == ACCESS_MODE::DIRECTORY || access == ACCESS_MODE::DIRECTORY_ALT)
-        return open_dir((dirFormat_t) translate);
+        err = open_dir((dirFormat_t) translate);
+    else
+        err = open_file();
 
-    return open_file();
+    // A failed open is never closed: the caller just deletes the protocol.
+    if (err != FUJI_ERROR::NONE)
+    {
+        auto open_error = error;
+        umount();
+        error = open_error;
+    }
+
+    return err;
 }
 
 fujiError_t NetworkProtocolFS::open_file()
 {
-    update_dir_filename(opened_url);
+    update_dir_filename(opened_path);
 
     if (streamMode == ACCESS_MODE::READ || streamMode == ACCESS_MODE::WRITE)
         resolve();
     else
         stat();
 
-    update_dir_filename(opened_url);
+    update_dir_filename(opened_path);
 
     streamType = streamType_t::FILE;
 
-    if (opened_url->path.empty())
+    if (opened_path.empty())
         return FUJI_ERROR::UNSPECIFIED;
 
     return open_file_handle();
@@ -79,7 +93,7 @@ fujiError_t NetworkProtocolFS::open_dir(dirFormat_t fmt)
 #endif /* BUILD_RS232 */
     dirBuffer.clear();
     dirBuffer.shrink_to_fit();
-    update_dir_filename(opened_url);
+    update_dir_filename(opened_path);
 
     // assume everything if no filename.
     if (filename.empty())
@@ -89,7 +103,7 @@ fujiError_t NetworkProtocolFS::open_dir(dirFormat_t fmt)
     Debug_printf("NetworkProtocolFS::open_dir(%s)\r\n", opened_url->url.c_str());
 #endif
 
-    if (opened_url->path.empty())
+    if (opened_path.empty())
     {
         return FUJI_ERROR::UNSPECIFIED;
     }
@@ -110,7 +124,7 @@ fujiError_t NetworkProtocolFS::open_dir(dirFormat_t fmt)
     if (fmt == DIR_FORMAT::A2CAT || fmt == DIR_FORMAT::A2CATALOG)
     {
         char hdr[96];
-        dirBuffer += opened_url->path + lineEnding + lineEnding;
+        dirBuffer += opened_path + lineEnding + lineEnding;
         if (fmt == DIR_FORMAT::A2CAT)
             snprintf(hdr, sizeof(hdr), " %-15s %-4s %6s  %-9s",
                      "NAME", "TYPE", "BLOCKS", "MODIFIED");
@@ -193,12 +207,12 @@ fujiError_t NetworkProtocolFS::open_dir(dirFormat_t fmt)
     return error == NDEV_STATUS::SUCCESS ? FUJI_ERROR::NONE : FUJI_ERROR::UNSPECIFIED;
 }
 
-void NetworkProtocolFS::update_dir_filename(PeoplesUrlParser *url)
+void NetworkProtocolFS::update_dir_filename(const std::string &path)
 {
-    size_t found = url->path.find_last_of("/");
+    size_t found = path.find_last_of("/");
 
-    dir = util_get_canonical_path(url->path.substr(0, found + 1));
-    filename = url->path.substr(found + 1);
+    dir = util_get_canonical_path(path.substr(0, found + 1));
+    filename = path.substr(found + 1);
 
     // transform the possible everything wildcards
     if (filename == "*.*" || filename == "-" || filename == "**" || filename == "*")
@@ -278,16 +292,19 @@ fujiError_t NetworkProtocolFS::read(unsigned short len)
 
 fujiError_t NetworkProtocolFS::read_file(unsigned short len)
 {
-    std::vector<uint8_t> buf = std::vector<uint8_t>(len);
+    // A read that runs past what is there fails as a whole, so ask only for that.
+    // With nothing counted, ask for len so the adapter waits or reports EOF.
+    size_t avail = available();
+    std::vector<uint8_t> buf = std::vector<uint8_t>(avail ? std::min<size_t>(len, avail) : len);
 
 #ifdef VERBOSE_HTTP
-    Debug_printf("NetworkProtocolFS::read_file(%u)\r\n", len);
+    Debug_printf("NetworkProtocolFS::read_file(%u)\r\n", (unsigned) buf.size());
 #endif
 
     if (receiveBuffer->length() == 0)
     {
         // Do block read.
-        if (read_file_handle(buf.data(), len) != FUJI_ERROR::NONE)
+        if (read_file_handle(buf.data(), buf.size()) != FUJI_ERROR::NONE)
         {
 #ifdef VERBOSE_PROTOCOL
             Debug_printf("Nothing new from adapter, bailing.\n");
@@ -297,10 +314,10 @@ fujiError_t NetworkProtocolFS::read_file(unsigned short len)
 
         // Append to receive buffer.
         receiveBuffer->insert(receiveBuffer->end(), buf.begin(), buf.end());
-        fileSize -= len;
+        fileSize -= buf.size();
 
         // Translate the freshly-read bytes exactly once.
-        return NetworkProtocol::read(len);
+        return NetworkProtocol::read(buf.size());
     }
 
     // receiveBuffer already holds translated data; return without re-translating,
@@ -338,6 +355,8 @@ fujiError_t NetworkProtocolFS::write_file(unsigned short len)
         return FUJI_ERROR::UNSPECIFIED;
 
     transmitBuffer->erase(0, len);
+    // resolve() can leave the error of a failed lookup, e.g. for a new file.
+    error = NDEV_STATUS::SUCCESS;
     return FUJI_ERROR::NONE;
 }
 
@@ -366,12 +385,16 @@ fujiError_t NetworkProtocolFS::status_file(NetworkStatus *status)
         remaining = fileSize;
     }
     else {
+        // Translation changes the length, so only translated bytes can be
+        // counted. Without it available() is exact and needs no read-ahead.
+        if (netproto_is_translation_enabled(translation_mode))
+            NetworkProtocol::status(status);
         remaining = fileSize + receiveBuffer->length();
     }
 
     status->connected = remaining > 0 ? 1 : 0;
     if (was_write)
-        status->error = NDEV_STATUS::SUCCESS;
+        status->error = error;
     else
         status->error = remaining > 0 ? error : NDEV_STATUS::END_OF_FILE;
 
@@ -391,7 +414,7 @@ fujiError_t NetworkProtocolFS::status_dir(NetworkStatus *status)
 void NetworkProtocolFS::resolve()
 {
 #ifdef VERBOSE_PROTOCOL
-    Debug_printf("NetworkProtocolFS::resolve(%s,%s,%s)\r\n", opened_url->path.c_str(), dir.c_str(), filename.c_str());
+    Debug_printf("NetworkProtocolFS::resolve(%s,%s,%s)\r\n", opened_path.c_str(), dir.c_str(), filename.c_str());
 #endif
 
     if (stat() != FUJI_ERROR::NONE)
@@ -420,7 +443,7 @@ void NetworkProtocolFS::resolve()
 
             if (crunched_filename == crunched_entry)
             {
-                opened_url->path = dir + current_entry;
+                opened_path = dir + current_entry;
                 stat(); // TODO: see if this assumption of success holds true in all cases?
                 break;
             }
@@ -440,7 +463,7 @@ void NetworkProtocolFS::resolve()
 
 fujiError_t NetworkProtocolFS::rename(PeoplesUrlParser *url)
 {
-    update_dir_filename(url);
+    update_dir_filename(file_path(url));
 
     // Preprocessing routine to parse out comma position.
 
@@ -473,7 +496,11 @@ size_t NetworkProtocolFS::available()
     case streamType_t::FILE:
         if (streamMode == ACCESS_MODE::WRITE)
             return 0;
-        avail = std::min<size_t>(fileSize + receiveBuffer->length(), WAITING_CAP);
+        // read_file() serves receiveBuffer before the file and never both at
+        // once, so count only what the next READ returns.
+        avail = receiveBuffer->length();
+        if (!avail)
+            avail = std::min<size_t>(fileSize, WAITING_CAP);
         break;
     case streamType_t::DIR:
         avail = receiveBuffer->length();

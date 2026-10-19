@@ -74,8 +74,9 @@ public:
     // Terminate the transaction without sending response data due to an error.
     virtual void transaction_error() = 0;
 
-    // Receive exactly len bytes from the current transaction. Returns false if
-    // the transaction cannot be completed successfully.
+    // Receive up to len bytes of the current transaction's payload into data.
+    // An empty or absent payload copies nothing and is success; only a transport
+    // failure (timeout, bad checksum, short fixed-length frame) is an error.
     virtual success_is_true transaction_get(void *data, size_t len) = 0;
 
     inline success_is_true transaction_get(ByteBuffer &buffer) {
@@ -159,46 +160,34 @@ public:
 
 #ifdef BUILD_ATARI
 #include "sio/sio.h"
-#ifdef ESP_PLATFORM
-  #define FN_BUS_PORT fnUartBUS
-#else
-  #define FN_BUS_PORT fnSioCom
-#endif
 #endif
 
 #ifdef BUILD_IEC
 #include "iec/iec.h"
-#define FN_BUS_PORT fnUartBUS  // TBD
 #endif
 
 #ifdef BUILD_ADAM
 #include "adamnet/adamnet.h"
-#define FN_BUS_PORT fnUartBUS
 #endif
 
 #ifdef BUILD_LYNX
 #include "comlynx/comlynx.h"
-#define FN_BUS_PORT fnUartBUS
 #endif
 
 #ifdef NEW_TARGET
 #include "new/adamnet.h"
-#define FN_BUS_PORT fnUartBUS
 #endif
 
 #ifdef BUILD_APPLE
 #include "iwm/iwm.h"
-#define FN_BUS_PORT fnUartBUS // TBD
 #endif
 
 #ifdef BUILD_MAC
 #include "mac/mac.h"
-#define FN_BUS_PORT fnUartBUS
 #endif
 
 #ifdef BUILD_S100
 #include "s100spi/s100spi.h"
-#define FN_BUS_PORT fnUartBUS // TBD
 #endif
 
 #ifdef BUILD_RS232
@@ -207,17 +196,10 @@ public:
 
 #ifdef BUILD_CX16
 #include "cx16_i2c/cx16_i2c.h"
-#define FN_BUS_PORT fnUartBUS // TBD
 #endif
 
 #ifdef BUILD_RC2014
 #include "rc2014bus/rc2014bus.h"
-#define FN_BUS_PORT fnUartBUS
-#endif
-
-#ifdef BUILD_H89
-#include "h89/h89.h"
-#define FN_BUS_PORT fnUartBUS // TBD
 #endif
 
 #ifdef BUILD_COCO

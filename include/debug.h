@@ -22,20 +22,17 @@
 */
 #ifdef DEBUG
 #ifdef ESP_PLATFORM
-#ifdef ENABLE_CONSOLE
-    #include "../lib/console/ESP32Console.h"
-    #define Serial console
-#else // ENABLE_CONSOLE
-    // Use FujiNet debug serial output
+    // Use FujiNet debug serial output, also with ENABLE_CONSOLE: Console has no print methods
     #include "../lib/hardware/ESP32UARTChannel.h"
     #define Serial fnDebugConsole
-#endif // !ENABLE_CONSOLE
 
 #if defined( PINMAP_RS232_S3 ) || defined( PINMAP_LYNX_S3 )
-    #define Debug_print(...) printf( __VA_ARGS__ )
-    #define Debug_printf(...) printf( __VA_ARGS__ )
-    #define Debug_println(...) do { printf(__VA_ARGS__); printf("\n"); } while (0)
-    #define Debug_printv(format, ...) {printf( ANSI_YELLOW "[%s:%u] %s(): " ANSI_GREEN_BOLD format ANSI_RESET "\r\n", __FILE__, __LINE__, __FUNCTION__, ##__VA_ARGS__);}
+    // ::printf, because inside an IOChannel subclass a bare printf is the
+    // channel's own and would send the message out of the serial port.
+    #define Debug_print(...) ::printf( __VA_ARGS__ )
+    #define Debug_printf(...) ::printf( __VA_ARGS__ )
+    #define Debug_println(...) do { ::printf(__VA_ARGS__); ::printf("\n"); } while (0)
+    #define Debug_printv(format, ...) {::printf( ANSI_YELLOW "[%s:%u] %s(): " ANSI_GREEN_BOLD format ANSI_RESET "\r\n", __FILE__, __LINE__, __FUNCTION__, ##__VA_ARGS__);}
     #define Debug_memory() {Debug_printv("Heap[%lu] Low[%lu] Task[%u]", esp_get_free_heap_size(), esp_get_free_internal_heap_size(), uxTaskGetStackHighWaterMark(NULL));}
 #else
     #define Debug_print(...) Serial.print( __VA_ARGS__ )
@@ -70,11 +67,6 @@
 #endif // DEBUG
 
 #ifndef DEBUG
-#ifdef ESP_PLATFORM
-    // Use FujiNet debug serial output
-    #include "../lib/hardware/fnUART.h"
-#endif
-
     #define Debug_print(...)
     #define Debug_printf(...)
     #define Debug_println(...)

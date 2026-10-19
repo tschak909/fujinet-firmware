@@ -25,6 +25,10 @@
 #include "fnSystem.h"
 #include "fnConfig.h"
 #include "fnPassword.h"
+
+#ifdef CONFIG_USB_PICOBOOT_HOST_ENABLED
+#include "fnPicoUpdater.h"
+#endif
 #include "fnWiFi.h"
 
 #include "fsFlash.h"
@@ -252,6 +256,10 @@ void main_setup(int argc, char *argv[])
     // Load the device password (kept in flash, separate from the config file)
     fnPassword.setup();
 
+#ifdef CONFIG_USB_PICOBOOT_HOST_ENABLED
+    fnPicoUpdater.bootCheck();
+#endif
+
     // WiFi/BT auto connect moved to app_main()
 
 #ifdef BUILD_ATARI
@@ -375,27 +383,6 @@ void main_setup(int argc, char *argv[])
 
     sioR = new rc2014Modem(ptrfs, Config.get_modem_sniffer_enabled()); // Config/User selected sniffer enable
     SYSTEM_BUS.addDevice(sioR, FUJI_DEVICEID::SERIAL); // R:
-
-#endif
-
-#ifdef BUILD_H89
-    theFuji->setup();
-    SYSTEM_BUS.setup();
-
-    FileSystem *ptrfs = fnSDFAT.running() ? (FileSystem *)&fnSDFAT : (FileSystem *)&fsFlash;
-    H89Printer::printer_type ptype = Config.get_printer_type(0);
-    if (ptype == H89Printer::printer_type::PRINTER_INVALID)
-        ptype = H89Printer::printer_type::PRINTER_FILE_TRIM;
-
-    Debug_printf("Creating a default printer using %s storage and type %d\r\n", ptrfs->typestring(), ptype);
-
-    H89Printer *ptr = new H89Printer(ptrfs, ptype);
-    fnPrinters.set_entry(0, ptr, ptype, Config.get_printer_port(0));
-
-    // SYSTEM_BUS.addDevice(ptr, H89_DEVICEID_PRINTER + fnPrinters.get_port(0)); // P:
-
-    // H89R = new H89Modem(ptrfs, Config.get_modem_sniffer_enabled()); // Config/User selected sniffer enable
-    // SYSTEM_BUS.addDevice(H89R, H89_DEVICEID_MODEM); // R:
 
 #endif
 
@@ -594,18 +581,27 @@ void fn_service_loop(void *param)
 #endif
 
 #if defined(ESP_PLATFORM) && defined(DEBUG)
-        // Internal DRAM every 10s: flat is a fixed cost, falling is a leak. Flat free
-        // with a decaying largest block is fragmentation. The loop has no delay, so
-        // anything per-iteration is unreadable at bus rates.
+        // Internal DRAM checked every 10s and printed only when it changes: falling free
+        // is a leak, flat free with a decaying largest block is fragmentation. The loop
+        // has no delay, so anything per-iteration is unreadable at bus rates.
         {
             static unsigned long last_heap_report = 0;
+            static uint32_t last_low = 0, last_total = 0;
+            static unsigned last_blk = 0;
             unsigned long now = fnSystem.millis();
             if (now - last_heap_report >= 10000)
             {
                 last_heap_report = now;
-                Debug_printv("Low Heap: %lu Heap: %lu MaxIntBlk: %u",
-                             esp_get_free_internal_heap_size(), esp_get_free_heap_size(),
-                             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+                uint32_t low = esp_get_free_internal_heap_size();
+                uint32_t total = esp_get_free_heap_size();
+                unsigned blk = (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+                if (low != last_low || total != last_total || blk != last_blk)
+                {
+                    last_low = low;
+                    last_total = total;
+                    last_blk = blk;
+                    Debug_printv("Low Heap: %lu Heap: %lu MaxIntBlk: %u", low, total, blk);
+                }
             }
         }
 #endif
@@ -654,8 +650,15 @@ extern "C"
 #endif
 #define MAIN_CPUAFFINITY 1
 
-        xTaskCreatePinnedToCore(fn_service_loop, "fnLoop",
-                                MAIN_STACKSIZE, nullptr, MAIN_PRIORITY, nullptr, MAIN_CPUAFFINITY);
+        // Without this task there is no bus service at all; app_main deletes itself
+        // next, so a silent failure here would leave a booted-looking brick.
+        if (xTaskCreatePinnedToCore(fn_service_loop, "fnLoop",
+                                    MAIN_STACKSIZE, nullptr, MAIN_PRIORITY, nullptr, MAIN_CPUAFFINITY) != pdPASS)
+        {
+            Debug_printv("could not create fnLoop task (%u byte stack), free internal/total heap: %lu/%lu",
+                         MAIN_STACKSIZE, esp_get_free_internal_heap_size(), esp_get_free_heap_size());
+            abort();
+        }
 
         // Delete app_main() task since we no longer need it
         vTaskDelete(NULL);

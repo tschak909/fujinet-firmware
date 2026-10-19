@@ -1,6 +1,13 @@
 #include "httpServiceConfigurator.h"
 
+#include <cerrno>
+#include <cstdint>
+#include <cstdlib>
 #include <cstring>
+
+#ifdef ESP_PLATFORM
+#include <esp_system.h>
+#endif
 
 #include "../../include/debug.h"
 
@@ -174,17 +181,6 @@ void netstream_activate()
 void fnHttpServiceConfigurator::config_hsio(std::string hsioindex)
 {
 #ifdef BUILD_ATARI
-#ifdef ESP_PLATFORM
-    int index = -1;
-    char pc = hsioindex[0];
-    if (pc >= '0' && pc <= '9')
-        index = pc - '0';
-    else
-    {
-        Debug_printf("Bad HSIO index value: %s\n", hsioindex.c_str());
-        return;
-    }
-#else
     Debug_printf("New HSIO index value: %s\n", hsioindex.c_str());
 
     int index = atoi(hsioindex.c_str());
@@ -195,7 +191,6 @@ void fnHttpServiceConfigurator::config_hsio(std::string hsioindex)
         Debug_printf("Bad HSIO index value: %s\n", hsioindex.c_str());
         return;
     }
-#endif
 
     SYSTEM_BUS.setHighSpeedIndex(index);
     // Store our change in Config
@@ -350,9 +345,29 @@ void fnHttpServiceConfigurator::config_cassette_rewind()
 {
 #ifdef BUILD_ATARI
     Debug_printf("Rewinding cassette.\n");
-    SYSTEM_BUS.getCassette()->rewind();
+    SYSTEM_BUS.getCassette()->request_rewind_to_start();
 
     Config.save();
+#endif /* ATARI */
+}
+
+// Rewind by N seconds of tape time. Anything but a positive integer that fits in 32 bits is ignored.
+void fnHttpServiceConfigurator::config_cassette_rewind_seconds(const std::string &seconds)
+{
+#ifdef BUILD_ATARI
+    errno = 0;
+    char *end = nullptr;
+    const unsigned long value = strtoul(seconds.c_str(), &end, 10);
+
+    if (seconds.empty() || seconds[0] == '-' || end == seconds.c_str() || *end != '\0' || errno == ERANGE ||
+        value == 0 || value > UINT32_MAX)
+    {
+        Debug_printf("rewind_seconds: invalid value '%s', ignored\n", seconds.c_str());
+        return;
+    }
+
+    Debug_printf("Rewinding cassette by %lu second(s).\n", value);
+    SYSTEM_BUS.getCassette()->request_rewind_seconds(static_cast<uint32_t>(value));
 #endif /* ATARI */
 }
 
@@ -680,6 +695,11 @@ int fnHttpServiceConfigurator::process_config_post(const char *postdata, size_t 
     Debug_printf("process_config_post: %s\n", postdata);
     // Create a new buffer for the url-decoded version of the data
     char *decoded_buf = (char *)malloc(postlen + 1);
+    if (decoded_buf == nullptr)
+    {
+        Debug_printf("process_config_post: could not allocate %u bytes\n", (unsigned)(postlen + 1));
+        return -1;
+    }
     url_decode(decoded_buf, postdata, postlen);
 
     std::map<std::string, std::string> postvals = parse_postdata(decoded_buf, postlen);
@@ -702,8 +722,17 @@ int fnHttpServiceConfigurator::process_config_post(const char *postdata, size_t 
         if (i->first.compare("resetfuji") == 0)
         {
         #ifdef ESP_PLATFORM
-            // Start a new task to reboot or we get stuck in endless loop waiting for web service to end
-            xTaskCreate(reboot_task, "reboot_task", 2048, NULL, 15, NULL);
+            // Start a new task to reboot or we get stuck in endless loop waiting for web service to end.
+            // reboot() shuts down every device on the bus, which overflows a 2 KB stack.
+            if (xTaskCreate(reboot_task, "reboot_task", 8192, nullptr, 15, nullptr) != pdPASS)
+            {
+                // Task creation fails exactly when memory is exhausted - the case the
+                // user is trying to reset out of. Reboot immediately; esp_restart()
+                // doesn't wait on the web service, so the endless-loop hazard of an
+                // orderly reboot doesn't apply.
+                Debug_printv("could not create reboot task, restarting immediately");
+                esp_restart();
+            }
         #endif
         }
         else if (i->first.compare("printermodel1") == 0)
@@ -749,6 +778,10 @@ int fnHttpServiceConfigurator::process_config_post(const char *postdata, size_t 
         else if (i->first.compare("rew") == 0)
         {
             config_cassette_rewind();
+        }
+        else if (i->first.compare("rewind_seconds") == 0)
+        {
+            config_cassette_rewind_seconds(i->second);
         }
         else if (i->first.compare("cassette_enabled") == 0)
         {

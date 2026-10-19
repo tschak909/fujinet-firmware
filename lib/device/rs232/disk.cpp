@@ -122,7 +122,8 @@ void rs232Disk::rs232_read(uint32_t sector)
 
     Debug_printf("disk READ %lu\n", sector);
 
-    if (_disk == nullptr)
+    // unmount() closes the image but keeps _disk, so check device_active too
+    if (_disk == nullptr || !device_active)
     {
         SYSTEM_BUS.transaction_error();
         return;
@@ -143,7 +144,7 @@ void rs232Disk::rs232_write(uint32_t sector, bool verify)
 
     SYSTEM_BUS.transaction_accept(TRANS_STATE::WILL_GET);
 
-    if (_disk != nullptr)
+    if (_disk != nullptr && device_active)
     {
         uint16_t sectorSize = _disk->sector_size(sector);
 
@@ -165,6 +166,7 @@ void rs232Disk::rs232_write(uint32_t sector, bool verify)
 // Status
 void rs232Disk::rs232_status(FujiStatusReq reqType)
 {
+    SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
     Debug_print("disk STATUS\n");
 
     /* STATUS BYTES
@@ -293,9 +295,9 @@ mediatype_t rs232Disk::mount(fnFile *f, const char *filename, uint32_t disksize,
         _disk = nullptr;
     }
 
-    // Determine MediaType based on filename extenrs232n
+    // Determine MediaType from the filename extension and, for .DSK, the size
     if (disk_type == MEDIATYPE_UNKNOWN && filename != nullptr)
-        disk_type = MediaType::discover_mediatype(filename);
+        disk_type = MediaType::discover_mediatype(filename, disksize);
 
     // Now mount based on MediaType
     switch (disk_type)
@@ -311,6 +313,28 @@ mediatype_t rs232Disk::mount(fnFile *f, const char *filename, uint32_t disksize,
             strlcpy(rom->_disk_filename, filename, sizeof(rom->_disk_filename));
         rom->mount(f, disksize);
         return push_rom_streams(rom) ? MEDIATYPE_ROM : MEDIATYPE_UNKNOWN;
+    }
+    case MEDIATYPE_IMD:
+    {
+        device_active = true;
+        _mount_time = time(nullptr);
+        MediaTypeIMD *imd = new MediaTypeIMD((access_mode & DISK_ACCESS_MODE_WRITE) != 0);
+        _disk = imd;
+        imd->_media_host = host;
+        if (filename != nullptr)
+            strlcpy(imd->_disk_filename, filename, sizeof(imd->_disk_filename));
+        return imd->mount(f, disksize);
+    }
+    case MEDIATYPE_ALTAIR:
+    {
+        device_active = true;
+        _mount_time = time(nullptr);
+        MediaTypeAltair *altair = new MediaTypeAltair((access_mode & DISK_ACCESS_MODE_WRITE) != 0);
+        _disk = altair;
+        altair->_media_host = host;
+        if (filename != nullptr)
+            strlcpy(altair->_disk_filename, filename, sizeof(altair->_disk_filename));
+        return altair->mount(f, disksize);
     }
     case MEDIATYPE_IMG:
     case MEDIATYPE_UNKNOWN:
@@ -352,11 +376,11 @@ void rs232Disk::unmount()
 }
 
 // Create blank disk
-success_is_true rs232Disk::write_blank(fnFile *f, uint16_t sectorSize, uint16_t numSectors)
+success_is_true rs232Disk::write_blank(fnFile *f, const NewDiskRequest &req)
 {
     Debug_print("disk CREATE NEW IMAGE\n");
 
-    return MediaTypeImg::create(f, sectorSize, numSectors);
+    return MediaTypeImg::create(f, req.sectorSize, req.numSectors);
 }
 
 // Process command
@@ -367,14 +391,20 @@ void rs232Disk::rs232_process(const FujiBusPacket &packet)
     switch (packet.command())
     {
     case CMD::DISK_READ:
-        rs232_read(packet.param(0));
-        return;
     case CMD::DISK_PUT:
-        rs232_write(packet.param(0), false);
+    case CMD::DISK_WRITE:
+        // The sector number is the first field; without one, param(0) would
+        // throw (and with exceptions off, abort)
+        if (packet.paramCount() < 1)
+            break;
+        if (packet.command() == CMD::DISK_READ)
+            rs232_read(packet.param(0));
+        else
+            rs232_write(packet.param(0), packet.command() == CMD::DISK_WRITE);
         return;
     case CMD::DISK_STATUS:
-    case CMD::DISK_WRITE:
-        rs232_write(packet.param(0), true);
+        rs232_status(packet.paramCount() ? static_cast<FujiStatusReq>(packet.param(0))
+                                         : FujiStatusReq::CONNERR);
         return;
     case CMD::DISK_FORMAT:
     case CMD::DISK_FORMAT_MEDIUM:

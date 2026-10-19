@@ -7,21 +7,21 @@
 
 void sioNetwork::sio_process(const FujiSIOPacket &packet)
 {
-    // Let the base class handle standard commands
-    if (NDevice::processCommand(packet))
-        return;
-
+    // Before the base class, which NAKs any command it does not know.
     switch (packet.command())
     {
     case CMD::NET_GET_DSTATS_VALUE:
         sio_get_dstats_value(packet);
-        break;
+        return;
     case CMD::NET_HSIO_INDEX:
         sio_high_speed();
-        break;
+        SYSTEM_BUS.toggleBaudrate();
+        return;
     default:
         break;
     }
+
+    NDevice::processCommand(packet);
 }
 
 /**
@@ -161,6 +161,32 @@ void sioNetwork::fujidev_set_query(const FUJI_COMMAND_PACKET &packet)
     SYSTEM_BUS.transaction_success();
 }
 
+void sioNetwork::fujidev_read(const FUJI_COMMAND_PACKET &packet)
+{
+    SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
+
+    uint16_t num_bytes = packet.param(0);
+
+    if (!num_bytes)
+    {
+        SYSTEM_BUS.transaction_error();
+        return;
+    }
+
+    ByteBuffer buf;
+    if (fujicore_read(buf, num_bytes).is_error())
+    {
+        // The Atari reads a data frame after ERROR too; without one SIOV waits out DTIMLO.
+        buf.assign(num_bytes, 0);
+        SYSTEM_BUS.transaction_send(buf, true);
+        return;
+    }
+
+    // An SIO data frame carries no length: the Atari takes exactly num_bytes, so pad a short read.
+    buf.resize(num_bytes, 0);
+    SYSTEM_BUS.transaction_send(buf);
+}
+
 void sioNetwork::fujidev_seek(const FUJI_COMMAND_PACKET &packet)
 {
     u24le_t offset;
@@ -174,9 +200,6 @@ void sioNetwork::fujidev_seek(const FUJI_COMMAND_PACKET &packet)
 
     if (fujicore_seek(offset).is_error())
     {
-#ifdef HAVE_LAST_ERROR
-        lastError = NDEV_STATUS::INVALID_POINT;
-#endif /* HAVE_LAST_ERROR */
         SYSTEM_BUS.transaction_error();
         return;
     }

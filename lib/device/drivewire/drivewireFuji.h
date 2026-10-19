@@ -17,11 +17,14 @@ private:
 protected:
     size_t set_additional_direntry_details(fsdir_entry_t *f, uint8_t *dest,
                                            uint8_t maxlen) override;
+    void fujidev_copy_file(const FUJI_COMMAND_PACKET &packet) override;
 
-    void new_disk();
     void random();
 
     void shutdown() override;
+
+    // -1 stops the base from blinking before the queued swap runs; rotate_disks() blinks.
+    int get_rotate_slot() override { return -1; }
 
 public:
     drivewireNetwork *network();
@@ -45,6 +48,8 @@ public:
     success_is_true fujicore_mount_disk_image_success(uint8_t deviceSlot,
                                                       disk_access_flags_t access_mode) override;
 
+    // Called by the bus between transfers.
+    void rotate_disks();
 };
 
 extern drivewireFuji platformFuji;

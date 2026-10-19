@@ -22,6 +22,20 @@ public:
     virtual ~NetworkProtocolSMB();
 
     /**
+     * @brief Rename file specified by incoming devicespec.
+     * @param url pointer to PeoplesUrlParser pointing to file/dest to rename
+     * @return FUJI_ERROR::NONE on success, FUJI_ERROR::UNSPECIFIED on error
+     */
+    fujiError_t rename(PeoplesUrlParser *url) override;
+
+    /**
+     * @brief Delete file specified by incoming devicespec.
+     * @param url pointer to PeoplesUrlParser pointing to file to delete
+     * @return FUJI_ERROR::NONE on success, FUJI_ERROR::UNSPECIFIED on error
+     */
+    fujiError_t del(PeoplesUrlParser *url) override;
+
+    /**
      * @brief Make directory specified by incoming devicespec.
      * @param url pointer to PeoplesUrlParser pointing to file to delete
      * @return FUJI_ERROR::NONE on success, FUJI_ERROR::UNSPECIFIED on error
@@ -178,6 +192,12 @@ private:
      * @brief get status of file, filling in filesize. mount() must have already been called.
      */
     fujiError_t stat() override;
+
+    /**
+     * @brief path relative to the share, as libsmb2 takes it
+     * @param path a URL path, /share/dir/name
+     */
+    static std::string share_path(const std::string &path);
 };
 
 #endif /* NETWORKPROTOCOLSMB_H */

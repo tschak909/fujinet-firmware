@@ -16,10 +16,130 @@
 #ifdef BUILD_ATARI
 #include "sio/sioFuji.h"
 #endif /* BUILD_ATARI */
+#ifdef BUILD_MAC
+#include <esp_heap_caps.h>
+#include <cJSON.h>
+#endif /* BUILD_MAC */
 
 using namespace std;
 
 #define MAX_PRINTER_LIST_BUFFER (2048)
+
+#ifdef BUILD_MAC
+// HFS names are MacRoman; JSON has to be UTF-8
+static string macroman_to_utf8(const char *in)
+{
+    static const uint16_t high[128] = {
+        0x00C4, 0x00C5, 0x00C7, 0x00C9, 0x00D1, 0x00D6, 0x00DC, 0x00E1, 0x00E0, 0x00E2, 0x00E4, 0x00E3, 0x00E5, 0x00E7, 0x00E9, 0x00E8,
+        0x00EA, 0x00EB, 0x00ED, 0x00EC, 0x00EE, 0x00EF, 0x00F1, 0x00F3, 0x00F2, 0x00F4, 0x00F6, 0x00F5, 0x00FA, 0x00F9, 0x00FB, 0x00FC,
+        0x2020, 0x00B0, 0x00A2, 0x00A3, 0x00A7, 0x2022, 0x00B6, 0x00DF, 0x00AE, 0x00A9, 0x2122, 0x00B4, 0x00A8, 0x2260, 0x00C6, 0x00D8,
+        0x221E, 0x00B1, 0x2264, 0x2265, 0x00A5, 0x00B5, 0x2202, 0x2211, 0x220F, 0x03C0, 0x222B, 0x00AA, 0x00BA, 0x03A9, 0x00E6, 0x00F8,
+        0x00BF, 0x00A1, 0x00AC, 0x221A, 0x0192, 0x2248, 0x2206, 0x00AB, 0x00BB, 0x2026, 0x00A0, 0x00C0, 0x00C3, 0x00D5, 0x0152, 0x0153,
+        0x2013, 0x2014, 0x201C, 0x201D, 0x2018, 0x2019, 0x00F7, 0x25CA, 0x00FF, 0x0178, 0x2044, 0x20AC, 0x2039, 0x203A, 0xFB01, 0xFB02,
+        0x2021, 0x00B7, 0x201A, 0x201E, 0x2030, 0x00C2, 0x00CA, 0x00C1, 0x00CB, 0x00C8, 0x00CD, 0x00CE, 0x00CF, 0x00CC, 0x00D3, 0x00D4,
+        0xF8FF, 0x00D2, 0x00DA, 0x00DB, 0x00D9, 0x0131, 0x02C6, 0x02DC, 0x00AF, 0x02D8, 0x02D9, 0x02DA, 0x00B8, 0x02DD, 0x02DB, 0x02C7};
+    string out;
+    for (const unsigned char *p = reinterpret_cast<const unsigned char *>(in); *p; p++)
+    {
+        uint16_t c = *p < 0x80 ? *p : high[*p - 0x80];
+        if (c < 0x80)
+            out += static_cast<char>(c);
+        else if (c < 0x800)
+        {
+            out += static_cast<char>(0xC0 | (c >> 6));
+            out += static_cast<char>(0x80 | (c & 0x3F));
+        }
+        else
+        {
+            out += static_cast<char>(0xE0 | (c >> 12));
+            out += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+            out += static_cast<char>(0x80 | (c & 0x3F));
+        }
+    }
+    return out;
+}
+
+/* Mac mount list data: each slot's config next to what is actually loaded,
+   the hosts, and PSRAM. "</" is escaped since this lands in a <script> block. */
+string fnHttpServiceParser::mac_slots_json()
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON *slots = cJSON_AddArrayToObject(root, "slots");
+
+    for (int i = 0; i < MAX_DISK_DEVICES; i++)
+    {
+        cJSON *s = cJSON_CreateObject();
+        cJSON_AddNumberToObject(s, "n", i + 1);
+        cJSON_AddStringToObject(s, "role", i < MAC_DCD_SLOTS ? "hd20" : (i == MAC_FLOPPY_SLOT ? "floppy" : "none"));
+
+        int hs = Config.get_mount_host_slot(i);
+        if (hs != HOST_SLOT_INVALID)
+        {
+            cJSON_AddNumberToObject(s, "hs", hs);
+            cJSON_AddStringToObject(s, "host", Config.get_host_name(hs).c_str());
+            cJSON_AddStringToObject(s, "path", Config.get_mount_path(i).c_str());
+            cJSON_AddBoolToObject(s, "rw", Config.get_mount_mode(i) != fnConfig::mount_modes::MOUNTMODE_READ);
+        }
+
+        DISK_DEVICE *dd = theFuji->get_disk_dev(i);
+        if (dd != nullptr && dd->is_loaded())
+        {
+            cJSON_AddBoolToObject(s, "loaded", true);
+            cJSON_AddBoolToObject(s, "ro", dd->readonly);
+            cJSON_AddNumberToObject(s, "blocks", dd->size_in_blocks());
+
+            const MediaTypeDCD *dcd = dd->dcd_media();
+            if (dcd != nullptr)
+            {
+                static const char *kinds[] = {"", "volume", "drive", "dc42"};
+                static const char *fs[] = {"", "MFS", "HFS"};
+                static const char *boot[] = {"", "no-system", "unblessed", "blessed", "blessed-now"};
+                cJSON_AddStringToObject(s, "kind", kinds[static_cast<int>(dcd->image_kind)]);
+                cJSON_AddStringToObject(s, "fs", fs[static_cast<int>(dcd->fs_kind)]);
+                cJSON_AddStringToObject(s, "boot", boot[static_cast<int>(dcd->boot)]);
+                cJSON_AddStringToObject(s, "vol", macroman_to_utf8(dcd->volume_name).c_str());
+                cJSON_AddBoolToObject(s, "truncated", dcd->truncated);
+            }
+            else
+            {
+                cJSON_AddStringToObject(s, "kind", dd->is_sector_image() ? "sector" : "moof");
+                cJSON_AddNumberToObject(s, "sides", dd->num_sides());
+            }
+
+        }
+        cJSON_AddItemToArray(slots, s);
+    }
+
+    cJSON *hosts = cJSON_AddArrayToObject(root, "hosts");
+    for (int h = 0; h < MAX_HOSTS; h++)
+    {
+        if (Config.get_host_type(h) == fnConfig::host_types::HOSTTYPE_INVALID || Config.get_host_name(h).empty())
+            continue;
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddNumberToObject(o, "hs", h);
+        cJSON_AddStringToObject(o, "name", Config.get_host_name(h).c_str());
+        cJSON_AddItemToArray(hosts, o);
+    }
+
+    cJSON_AddNumberToObject(root, "psram_free", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    cJSON_AddNumberToObject(root, "psram_total", heap_caps_get_total_size(MALLOC_CAP_SPIRAM));
+
+    string out;
+    char *json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (json == nullptr)
+        return "{}";
+    for (const char *p = json; *p; p++)
+    {
+        if (p[0] == '<' && p[1] == '/')
+            out += "<\\";
+        else
+            out += *p;
+    }
+    cJSON_free(json);
+    return out;
+}
+#endif /* BUILD_MAC */
 
 const string fnHttpServiceParser::substitute_tag(const string &tag)
 {
@@ -126,6 +246,18 @@ const string fnHttpServiceParser::substitute_tag(const string &tag)
         FN_DRIVE9DEVICE,
         FN_DRIVE10DEVICE,
 #endif
+        FN_DRIVE1STATUS,
+        FN_DRIVE2STATUS,
+        FN_DRIVE3STATUS,
+        FN_DRIVE4STATUS,
+        FN_DRIVE5STATUS,
+        FN_DRIVE6STATUS,
+        FN_DRIVE7STATUS,
+        FN_DRIVE8STATUS,
+#ifdef BUILD_APPLE
+        FN_DRIVE9STATUS,
+        FN_DRIVE10STATUS,
+#endif
         FN_HOST1PREFIX,
         FN_HOST2PREFIX,
         FN_HOST3PREFIX,
@@ -147,6 +279,9 @@ const string fnHttpServiceParser::substitute_tag(const string &tag)
         FN_ONEDRIVE_CONNECTED,
         FN_PASSWORD_SET,
         FN_APPKEY_COUNT,
+#ifdef BUILD_MAC
+        FN_MAC_SLOTS,
+#endif
         FN_LASTTAG
     };
 
@@ -253,6 +388,18 @@ const string fnHttpServiceParser::substitute_tag(const string &tag)
         "FN_DRIVE9DEVICE",
         "FN_DRIVE10DEVICE",
 #endif
+        "FN_DRIVE1STATUS",
+        "FN_DRIVE2STATUS",
+        "FN_DRIVE3STATUS",
+        "FN_DRIVE4STATUS",
+        "FN_DRIVE5STATUS",
+        "FN_DRIVE6STATUS",
+        "FN_DRIVE7STATUS",
+        "FN_DRIVE8STATUS",
+#ifdef BUILD_APPLE
+        "FN_DRIVE9STATUS",
+        "FN_DRIVE10STATUS",
+#endif
         "FN_HOST1PREFIX",
         "FN_HOST2PREFIX",
         "FN_HOST3PREFIX",
@@ -274,6 +421,9 @@ const string fnHttpServiceParser::substitute_tag(const string &tag)
         "FN_ONEDRIVE_CONNECTED",
         "FN_PASSWORD_SET",
         "FN_APPKEY_COUNT",
+#ifdef BUILD_MAC
+        "FN_MAC_SLOTS",
+#endif
     };
 
     stringstream resultstream;
@@ -586,6 +736,25 @@ const string fnHttpServiceParser::substitute_tag(const string &tag)
             resultstream << " (D" << disk_id << ":)";
         }
         break;
+    case FN_DRIVE1STATUS:
+    case FN_DRIVE2STATUS:
+    case FN_DRIVE3STATUS:
+    case FN_DRIVE4STATUS:
+    case FN_DRIVE5STATUS:
+    case FN_DRIVE6STATUS:
+    case FN_DRIVE7STATUS:
+    case FN_DRIVE8STATUS:
+#ifdef BUILD_APPLE
+    case FN_DRIVE9STATUS:
+    case FN_DRIVE10STATUS:
+#endif
+        /* Is the disk the config names for this Drive Slot actually open? */
+        drive_slot = tagid - FN_DRIVE1STATUS;
+        if (Config.get_mount_host_slot(drive_slot) != HOST_SLOT_INVALID
+            && theFuji->get_disk(drive_slot)->fileh == nullptr) {
+            resultstream << "(not mounted)";
+        }
+        break;
     case FN_HOST1PREFIX:
     case FN_HOST2PREFIX:
     case FN_HOST3PREFIX:
@@ -655,6 +824,11 @@ const string fnHttpServiceParser::substitute_tag(const string &tag)
     case FN_APPKEY_COUNT:
         resultstream << AppKeyManager::count();
         break;
+#ifdef BUILD_MAC
+    case FN_MAC_SLOTS:
+        resultstream << mac_slots_json();
+        break;
+#endif
     default:
         resultstream << tag;
         break;

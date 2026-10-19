@@ -5,6 +5,7 @@
 #include "../disk.h"
 #include "bus.h"
 #include "../media/media.h"
+#include "../../media/mac/mediaTypeDCD.h"
 
 /*
 // drive state bits
@@ -36,6 +37,7 @@ class macFloppy : public virtualDevice
 protected:
     MediaType *_disk = nullptr;
 
+
     char disk_num = '0';
     bool enabled = false;
     int track_pos = 0;
@@ -47,13 +49,17 @@ protected:
     void dcd_status(uint8_t *buffer);
 
     // write capture from the Pico: raw IWM write bits, one frame per write
-    bool _sector_image = false;   // slot 5 holds a sector image (writable kind)
     uint8_t *_wcap = nullptr;
     size_t _wcap_len = 0;
     int _wcap_side = 0;
     bool _wcap_active = false;
     bool _wcap_overflow = false;
     void reload_track_buffers();
+    void insert_floppy();
+
+    // The Pico was told a disk is in ('s'/'d'), so unmount() may send 'r'
+    bool _disk_inserted = false;
+    int _archive_entry = 0;
 
     bool is_dcd_slot() { return disk_num >= '0' && disk_num < '0' + MAC_DCD_SLOTS; }
     bool is_floppy_slot() { return disk_num == '0' + MAC_FLOPPY_SLOT; }
@@ -68,7 +74,12 @@ public:
                       disk_access_flags_t access_mode,
                       mediatype_t disk_type = MEDIATYPE_UNKNOWN);
     void unmount();
-    bool write_blank(FILE *f, uint16_t sectorSize, uint16_t numSectors) { return false; };
+    struct NewDiskRequest {
+        uint8_t hostSlot;
+        uint8_t deviceSlot;
+        char filename[MAX_FILENAME_LEN];
+    };
+    success_is_true write_blank(FILE *f, const NewDiskRequest &req) { RETURN_ERROR_AS_FALSE(); };
     int get_track_pos() { return track_pos; };
     void set_dir(int d) { head_dir = d; }
     int step();
@@ -79,6 +90,29 @@ public:
     void set_disk_number(char c) { disk_num = c; _devnum = c; }
     char get_disk_number() { return disk_num; };
     mediatype_t disktype() { return _disk == nullptr ? MEDIATYPE_UNKNOWN : _disk->_mediatype; };
+
+    // Called from the bus service loop: flush an idle HD20 write cache
+    void flush_if_idle();
+
+
+    // What is actually loaded, as opposed to what the config names (web UI)
+    bool is_loaded() { return _disk != nullptr; }
+    // Which disk image of an archive the next mount takes (1-based, 0 = the
+    // first), and how many the mounted file holds
+    void set_archive_entry(int entry) { _archive_entry = entry; }
+    int image_count() { return _disk != nullptr ? _disk->image_count() : 0; }
+    bool is_sector_image() { return _disk != nullptr && _disk->accepts_sector_writes(); }
+    int num_sides() { return _disk != nullptr ? _disk->num_sides : 0; }
+    uint32_t size_in_blocks() { return _disk != nullptr ? _disk_size_in_blocks : 0; }
+    // anything loaded in slots 1-4 is an HD20 by construction (see unmount())
+    const MediaTypeDCD *dcd_media() { return _disk != nullptr ? _disk->dcd() : nullptr; }
+
+    // Activity totals for the web UI (HD20: blocks; floppy: tracks loaded, sectors written)
+    volatile uint32_t act_reads = 0;
+    volatile uint32_t act_writes = 0;
+    volatile uint32_t act_errors = 0;
+    volatile uint32_t act_status = 0;
+    volatile bool act_spinning = false;
 
     void shutdown() override {};
     void process(mac_cmd_t cmd) override;

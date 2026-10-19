@@ -30,7 +30,7 @@
 #define RS232_USB_RUN_PRIORITY  20
 #endif
 
-// Helper functions outside the class defintions
+// Helper functions outside the class definitions
 
 // Calculate 8-bit checksum
 uint8_t rs232_checksum(uint8_t *buf, unsigned short len)
@@ -71,9 +71,11 @@ success_is_true systemBus::transaction_get(void *data, size_t len)
     if (!len)
         RETURN_SUCCESS_AS_TRUE();
 
+    // A frame with no data block is an empty payload, not a failure: fujinet-lib
+    // clears a login or password by sending one (#1861).
     auto optional_data = _activePacket->data();
     if (!optional_data.has_value())
-        RETURN_ERROR_AS_FALSE();
+        RETURN_SUCCESS_AS_TRUE();
     size_t avail = optional_data.value().size() - _activePacketDataPosition;
     avail = std::min(avail, (size_t) len);
     memcpy(data, optional_data.value().data() + _activePacketDataPosition, avail);
@@ -136,12 +138,11 @@ void systemBus::_rs232_process_cmd()
 }
 
 /*
- Primary RS232 serivce loop:
- * If MOTOR line asserted, hand RS232 processing over to the TAPE device
- * If CMD line asserted, try reading CMD frame and sending it to appropriate device
- * If CMD line not asserted but MODEM is active, give it a chance to read incoming data
- * Throw out stray input on RS232 if neither of the above two are true
- * Give NETWORK devices an opportunity to signal available data
+ Primary RS232 service loop:
+ * If CP/M is active, hand the port to it
+ * If input is waiting, read a command frame and dispatch it
+ * Otherwise give the modem a chance to read incoming data
+ * Signal pending network data on RI (ESP) or the configured proceed line (PC)
  */
 void systemBus::service()
 {
@@ -153,10 +154,6 @@ void systemBus::service()
         _usb_boot_priority = false;
     }
 #endif
-
-    // Check for any messages in our queue (this should always happen, even if any other special
-    // modes disrupt normal RS232 handling - should probably make a separate task for this)
-    /*_rs232_process_queue();*/
 
     if (_cpmDev != nullptr && _cpmDev->cpmActive)
     {
@@ -228,13 +225,21 @@ void systemBus::setup()
         _port = &_boip;
     }
     else {
-#if FUJINET_OVER_USB
+#if FUJINET_OVER_USB || FUJINET_OVER_PPI
         _serial.begin();
 #else /* ! FUJINET_OVER_USB */
         _serial.begin(ChannelConfig()
                       .baud(Config.get_serial_baud())
                       .readTimeout(200)
                       .deviceID(SERIAL_DEVICE)
+#ifdef ESP_PLATFORM
+                      .rtsPin(PIN_RS232_RTS)
+                      .ctsPin(PIN_RS232_CTS)
+                      .dtrPin(PIN_RS232_DTR)
+                      .dsrPin(PIN_RS232_DSR)
+                      .dcdPin(PIN_RS232_DCD)
+                      .riPin(PIN_RS232_RI)
+#endif /* ESP_PLATFORM */
                       );
 #endif /* FUJINET_OVER_USB */
         _port = &_serial;
@@ -260,8 +265,12 @@ void systemBus::setup()
     _port = &_serial;
 #endif /* FUJINET_OVER_USB */
 
+    // Skipped over the 82C55: no line noise to flush, and its handshake holds
+    // any request the host sent while we booted
+#if !FUJINET_OVER_PPI
     Debug_println("RS232 Setup Flush");
     _port->discardInput();
+#endif /* FUJINET_OVER_PPI */
 }
 
 // Add device to RS232 bus
@@ -323,7 +332,8 @@ void systemBus::setBaudrate(int baud)
 
     Debug_printf("Changing baudrate from %d to %d\n", _rs232Baud, baud);
     _rs232Baud = baud;
-    _serial.setBaudrate(baud);
+    if (!isBoIP())
+        _serial.setBaudrate(baud);
 }
 
 std::unique_ptr<FujiBusPacket> systemBus::readBusPacket(int first)

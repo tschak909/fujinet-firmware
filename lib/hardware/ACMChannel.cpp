@@ -4,36 +4,19 @@
 
 #include <usb/usb_host.h>
 
+#include "fnUsbHost.h"
+
 #include "../../include/debug.h"
 
 #define TX_TIMEOUT_MS       (1000)
 
 #include <inttypes.h> // debug
 #include <esp_log.h>
+#include <esp_system.h>
 
 #define DEBUG_TAG "ACMChannel"
 
-#define MAX_FIFO_PAYLOAD 32
-typedef struct {
-    size_t length;
-    uint8_t data[MAX_FIFO_PAYLOAD];
-} FIFOPacket;
-
-static void usb_lib_task(void *arg)
-{
-    while (1) {
-        // Start handling system events
-        uint32_t event_flags;
-        usb_host_lib_handle_events(portMAX_DELAY, &event_flags);
-        if (event_flags & USB_HOST_LIB_EVENT_FLAGS_NO_CLIENTS) {
-            ESP_ERROR_CHECK(usb_host_device_free_all());
-        }
-        if (event_flags & USB_HOST_LIB_EVENT_FLAGS_ALL_FREE) {
-            Debug_printv("USB: All devices freed");
-            // Continue handling USB events to allow device reconnection
-        }
-    }
-}
+#define RX_BUFFER_SIZE      (8 * 1024)
 
 static bool rxForwarder(const uint8_t *data, size_t length, void *arg)
 {
@@ -43,21 +26,13 @@ static bool rxForwarder(const uint8_t *data, size_t length, void *arg)
     return true;
 }
 
+// Never waits for room: the CDC driver task that calls this also completes
+// transmits, so blocking here would stall dataOut().
 void ACMChannel::dataReceived(const uint8_t *data, size_t length)
 {
-    size_t offset;
-    FIFOPacket pkt;
-    BaseType_t woken;
-
-
-    for (offset = 0; length; offset += pkt.length, length -= pkt.length)
-    {
-        pkt.length = std::min(length, (size_t) MAX_FIFO_PAYLOAD);
-        memcpy(pkt.data, data + offset, pkt.length);
-        xQueueSendFromISR(rxQueue, &pkt, &woken);
-    }
-
-    return;
+    size_t sent = xStreamBufferSend(rxStream, data, length, 0);
+    if (sent < length)
+        _rxDropped += length - sent;
 }
 
 static void eventForwarder(const cdc_acm_host_dev_event_data_t *event, void *user_ctx)
@@ -178,21 +153,25 @@ static void reconnectTaskForwarder(void *arg)
 
 void ACMChannel::begin()
 {
-    rxQueue = xQueueCreate(1024 / MAX_FIFO_PAYLOAD, sizeof(FIFOPacket));
+    // The transport underpins the whole bus and begin() must not return without
+    // it; explicit checks instead of assert() so NDEBUG builds still stop here.
+    // A bulk buffer: PSRAM when the board has it.
+    rxStream = xStreamBufferCreateWithCaps(RX_BUFFER_SIZE, 1, MALLOC_CAP_SPIRAM);
+    if (rxStream == nullptr)
+        rxStream = xStreamBufferCreate(RX_BUFFER_SIZE, 1);
     device_disconnected_sem = xSemaphoreCreateBinary();
     device_connected_sem = xSemaphoreCreateBinary();  // <-- new
-    assert(device_disconnected_sem);
-    assert(device_connected_sem);
+    if (rxStream == nullptr || device_disconnected_sem == nullptr || device_connected_sem == nullptr)
+    {
+        Debug_printv("could not create ACM buffer/semaphores, free internal/total heap: %lu/%lu",
+                     esp_get_free_internal_heap_size(), esp_get_free_heap_size());
+        abort();
+    }
 
-    usb_host_config_t host_config = {};
-    host_config.skip_phy_setup = false;
-    host_config.intr_flags = ESP_INTR_FLAG_LEVEL1;
-    ESP_ERROR_CHECK(usb_host_install(&host_config));
-
-    BaseType_t task_created = xTaskCreate(usb_lib_task, "usb_lib", 4096,
-                                          xTaskGetCurrentTaskHandle(),
-                                          _service_priority, NULL);
-    assert(task_created == pdTRUE);
+    // False means something else already brought the host up -- on a
+    // Fujiversal board, PicoUpdater, which runs before the bus so it can
+    // flash the companion MCU while nothing else owns the port.
+    bool host_was_already_up = !usbHostEnsureInstalled(_service_priority);
 
     ndc_instance = this;
 
@@ -213,6 +192,21 @@ void ACMChannel::begin()
     dev_config.event_cb = eventForwarder;
     dev_config.data_cb = rxForwarder;
 
+    if (host_was_already_up)
+    {
+        // The comment above ("so we don't miss devices that were already
+        // connected at boot") only holds when we are the ones who started
+        // the host. NEW_DEV is sent at the instant a device enumerates and
+        // is never replayed, and the CDC-ACM driver raises new_dev_cb from
+        // that event alone -- so a companion that enumerated while
+        // PicoUpdater had the port (including the reboot right after a
+        // reflash) has already announced itself to nobody, and the wait
+        // below would never end. Make it announce itself again.
+        Debug_printv("USB host was already running -- recycling the root port "
+                     "so already-enumerated devices are re-announced");
+        usbHostRecycleRootPort();
+    }
+
     while (true) {
         // Wait for newDevCallback to find a CDC-ACM device
         xSemaphoreTake(device_connected_sem, portMAX_DELAY);
@@ -229,9 +223,11 @@ void ACMChannel::begin()
     // can recover without a full ESP32 reboot. Previously nothing ever
     // consumed device_connected_sem again after this point, so a
     // reattach was silently never noticed.
+    // Survivable: the bus is up, only replug recovery is lost.
     BaseType_t reconnect_task_created = xTaskCreate(reconnectTaskForwarder, "ACM-reconnect", 4096,
                                                      this, _service_priority, NULL);
-    assert(reconnect_task_created == pdTRUE);
+    if (reconnect_task_created != pdTRUE)
+        Debug_printv("could not create ACM-reconnect task, USB replug recovery disabled");
 
     return;
 }
@@ -242,17 +238,18 @@ void ACMChannel::end()
 
 void ACMChannel::updateFIFO()
 {
-    FIFOPacket pkt;
-    size_t old_len;
+    size_t avail;
 
-    while (xQueueReceive(rxQueue, &pkt, 0))
+    while ((avail = xStreamBufferBytesAvailable(rxStream)) > 0)
     {
-        old_len = _fifo.size();
-        _fifo.resize(old_len + pkt.length);
-        memcpy(&_fifo[old_len], pkt.data, pkt.length);
+        size_t old_len = _fifo.size();
+        _fifo.resize(old_len + avail);
+        _fifo.resize(old_len + xStreamBufferReceive(rxStream, &_fifo[old_len], avail, 0));
     }
 
-    return;
+    size_t dropped = _rxDropped.exchange(0);
+    if (dropped)
+        ESP_LOGE(DEBUG_TAG, "receive buffer full, dropped %u bytes", (unsigned) dropped);
 }
 
 size_t ACMChannel::dataOut(const void *buffer, size_t length)

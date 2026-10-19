@@ -32,11 +32,16 @@ private:
     void processAuthority(std::string pastTheColon);
     void cleanPath();
     void processPath();
+    static std::string percentDecode(const std::string &s);
+
+    std::string _filePath;
 
 protected:
     PeoplesUrlParser() {};
+    void resetURL(const std::string u);
 
 public:
+    explicit PeoplesUrlParser(const std::string &u) { resetURL(u); }
     ~PeoplesUrlParser() {};
 
     std::string mRawUrl;
@@ -58,6 +63,9 @@ public:
     std::string base(void);
 
     uint16_t getPort();
+    const std::string &getFullURL() const { return mRawUrl; }
+    // The path read as a file name: '?' and '#' stay in it, and %XX escapes are decoded.
+    std::string getFilePath(bool decode = true) const;
 
     /**
      * @brief Look up a key in the URL query string ("a=1&b=2&...").
@@ -67,8 +75,6 @@ public:
      */
     std::string queryParam(const std::string &key, const std::string &def = "");
 
-    static std::unique_ptr<PeoplesUrlParser> parseURL(const std::string &u);
-    void resetURL(const std::string u);
     std::string rebuildUrl(void);
     bool isValidUrl();
 

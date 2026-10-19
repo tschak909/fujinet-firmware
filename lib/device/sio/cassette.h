@@ -3,6 +3,8 @@
 
 #include "../../include/pinmap.h"
 
+#include <atomic>
+
 #ifdef ESP_PLATFORM
 #include <driver/rmt_types.h>
 #endif
@@ -10,6 +12,9 @@
 #include "bus.h"
 #include "fnSystem.h"
 #include "fnio.h"
+#include "cassetteFSKLoader.h"
+#include "cassetteRewindRequest.h"
+#include "cassetteTrail.h"
 
 #define CASSETTE_BAUDRATE 600
 #define BLOCK_LEN 128
@@ -99,16 +104,28 @@ protected:
 public:
     void umount_cassette_file();
     void mount_cassette_file(fnFile *f, size_t fz);
+    // Joins the progressive FSK loader, which reads the tape's file from its own task. Call before
+    // that file is closed or replaced.
+    void stop_fsk_loader();
 
     void sio_enable_cassette();  // setup cassette
     void sio_disable_cassette(); // stop cassette
     void sio_handle_cassette();  // Handle incoming & outgoing data for cassette
 
-    void rewind(); // rewind cassette
+    // Ask for a rewind, from any task. The tape is moved by the task that plays it, at the next point
+    // where the tape is at rest: when the cassette is enabled, or between two records. Requests made
+    // before then merge (seconds add up, the start of the tape beats seconds), and a mount or unmount
+    // drops them. Seconds go back to the last record boundary at or before that point on the tape
+    // already played, or to the start of the tape; a tape being recorded ignores them.
+    void request_rewind_seconds(uint32_t seconds) { _rewind_request.add_seconds(seconds); }
+    void request_rewind_to_start() { _rewind_request.to_start(); }
 
     bool is_mounted() { return _mounted; };
     bool is_active() { return cassetteActive; };
     bool has_pulldown() { return pulldown; };
+    // True once the MOTOR line has genuinely dropped, for a basic abort check
+    // during a blocking wait (e.g. an in-flight FSK run); see cassetteFSK.cpp.
+    bool motor_dropped() { return has_pulldown() && !motor_line(); }
     bool get_buttons();
     void set_buttons(bool play_record);
     void set_pulldown(bool resistor);
@@ -138,6 +155,22 @@ private:
 
     unsigned short block;
     unsigned short baud;
+
+    // Only the task that plays the tape moves it, so a rewind is asked for here and made there.
+    CassetteRewindRequest _rewind_request;
+    void apply_pending_rewind();
+    void rewind(); // to the start of the tape
+
+    // The boundaries played so far, for rewinding by seconds without touching the file. Owned by the
+    // task that plays the tape; a mount or unmount, from any task, only counts the generation up and
+    // the owner starts the trail over when it sees that.
+    CassetteTrail _trail;
+    std::atomic<uint32_t> _tape_generation{0};
+    uint32_t _record_ms = 0; // how long the record just played took, set by the format that played it
+
+#if defined(ESP_PLATFORM) && defined(BUILD_ATARI)
+    CassetteFSKLoader _fsk_loader;
+#endif
 
     size_t send_tape_block(size_t offset);
     void check_for_FUJI_file();

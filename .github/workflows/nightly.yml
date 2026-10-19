@@ -35,12 +35,22 @@ jobs:
     runs-on: "ubuntu-latest"
     strategy:
       matrix:
-        target-platform: [ATARI, ATARI-8mb, ADAM, APPLE, IEC-LOLIN-D32, IEC-NUGGET, COCO, MASTERIES-REVAB, MASTERIES-REVA-SPIFIX, RS232]
+        target-platform: [ATARI, ATARI-8mb, ADAM, APPLE, IEC-LOLIN-D32, IEC-NUGGET, COCO, MASTERIES-REVAB, MASTERIES-REVA-SPIFIX, RS232, FUJIVERSAL-INTV, FUJIVERSAL-DRIVEWIRE, FUJIVERSAL-MSX]
+        # Fujiversal boards also build a companion RP2040/RP2350 cartridge
+        # firmware, which needs an ARM toolchain the other boards do not.
+        include:
+          - target-platform: FUJIVERSAL-INTV
+            pico: true
+          - target-platform: FUJIVERSAL-DRIVEWIRE
+            pico: true
+          - target-platform: FUJIVERSAL-MSX
+            pico: true
 
     steps:
     - name: Checkout Source
       uses: actions/checkout@v4
       with:
+        submodules: true
         fetch-depth: 0
 
     - name: Cache pip
@@ -79,8 +89,21 @@ jobs:
     - name: Show pio location
       run: pip show platformio
 
+
+    # Fujiversal boards build a companion RP2350 cartridge firmware as part of
+    # their ESP32 build. The ARM toolchain comes from the runner's apt and must
+    # meet the pico_* minimums in platformio.common.ini; build.sh -y clones the
+    # pinned pico-sdk. build-essential builds the SDK's host tools (picotool,
+    # pioasm). Every other board skips this.
+    - name: Install companion-MCU toolchain
+      if: matrix.pico
+      run: |
+        sudo apt-get update && sudo apt-get install -y \
+          build-essential cmake ninja-build \
+          gcc-arm-none-eabi libnewlib-arm-none-eabi
+
     - name: Create PlatformIO INI for Build
-      run: cd /home/runner/work/fujinet-firmware/fujinet-firmware && /usr/bin/bash ./build.sh -l /home/runner/work/fujinet-firmware/fujinet-firmware/.github/workflows/platformio.release-${{ matrix.target-platform }}.ini -i /home/runner/work/fujinet-firmware/fujinet-firmware/platformio-generated.ini
+      run: cd /home/runner/work/fujinet-firmware/fujinet-firmware && /usr/bin/bash ./build.sh -y -l /home/runner/work/fujinet-firmware/fujinet-firmware/.github/workflows/platformio.release-${{ matrix.target-platform }}.ini -i /home/runner/work/fujinet-firmware/fujinet-firmware/platformio-generated.ini
 
     - name: Show platformio.ini
       run: cat /home/runner/work/fujinet-firmware/fujinet-firmware/platformio-generated.ini
@@ -113,7 +136,7 @@ jobs:
       run: echo "${{ steps.version.outputs.VERSION }}.${{ matrix.target-platform }}" > ./version.txt
 
     - name: Build release
-      run: cd /home/runner/work/fujinet-firmware/fujinet-firmware && /usr/bin/bash ./build.sh -z -l /home/runner/work/fujinet-firmware/fujinet-firmware/.github/workflows/platformio.release-${{ matrix.target-platform }}.ini -i /home/runner/work/fujinet-firmware/fujinet-firmware/platformio-generated.ini
+      run: cd /home/runner/work/fujinet-firmware/fujinet-firmware && /usr/bin/bash ./build.sh -y -z -l /home/runner/work/fujinet-firmware/fujinet-firmware/.github/workflows/platformio.release-${{ matrix.target-platform }}.ini -i /home/runner/work/fujinet-firmware/fujinet-firmware/platformio-generated.ini
 
     - name: Standardize Firmware Name
       run: mv ./firmware/fujinet*.zip ./firmware/fujinet-${{ matrix.target-platform }}-${{ steps.version.outputs.VERSION }}-nightly.zip

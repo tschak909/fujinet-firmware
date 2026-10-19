@@ -8,6 +8,7 @@
 #include "global_types.h"
 #include "global_defines.h"
 
+#include <cstdint>
 #include <string>
 
 // FIXME - only used by FS classes and doesn't belong here
@@ -27,7 +28,13 @@ typedef enum class NETPROTO_TRANS : uint8_t {
     LF       = 2,
     CRLF     = 3,
     PETSCII  = 4,
+    // Update netproto_is_translation_enabled() when adding a new mode
 } netProtoTranslation_t;
+
+inline bool netproto_is_translation_enabled(netProtoTranslation_t mode)
+{
+    return mode >= NETPROTO_TRANS::CR && mode <= NETPROTO_TRANS::PETSCII;
+}
 
 /**
  * @brief Translate a buffer coming from FujiNet towards the computer.
@@ -111,6 +118,11 @@ public:
      * Translation mode: 0=NONE, 1=CR, 2=LF, 3=CR/LF, 4=PETSCII
      */
     netProtoTranslation_t translation_mode = NETPROTO_TRANS::NONE;
+
+    /**
+     * Most bytes status() reads ahead while translating, so it can count what translation left.
+     */
+    size_t translate_ahead_max = SIZE_MAX;
 
     /**
      * The target computer's native end-of-line sequence. Each bus's network

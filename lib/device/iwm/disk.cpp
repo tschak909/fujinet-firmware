@@ -408,7 +408,6 @@ error_is_true iwmDisk::prodos_write_boot_block(fnFile *f)
   if (!sf)
   {
     Debug_printf("Could not open /prodos_boot_block.bin. Aborting.\n");
-    fclose(sf);
     RETURN_ERROR_AS_TRUE();
   }
 
@@ -614,8 +613,10 @@ static const char *prodos_generate_temp_name()
  * Used for writing ProDOS images which exist in multiples of
  * 512 byte blocks.
  */
-error_is_true iwmDisk::write_blank(fnFile *f, uint16_t numBlocks, uint8_t blank_header_type)
+error_is_true iwmDisk::write_blank(fnFile *f, const NewDiskRequest &req)
 {
+  uint16_t numBlocks = req.numBlocks;
+  uint8_t blank_header_type = req.headerType;
   unsigned char buf[512];
 
   memset(&buf,0,sizeof(buf));
@@ -626,7 +627,6 @@ error_is_true iwmDisk::write_blank(fnFile *f, uint16_t numBlocks, uint8_t blank_
     if (!sf)
     {
       Debug_printf("Could not open /blank.do. Aborting.\n");
-      fclose(sf);
       RETURN_ERROR_AS_TRUE();
     }
 

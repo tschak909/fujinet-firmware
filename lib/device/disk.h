@@ -1,6 +1,8 @@
 #ifndef DEVICE_DISK_H
 #define DEVICE_DISK_H
 
+#define MAX_FILENAME_LEN 256
+
 enum disk_access_flags_t {
     DISK_ACCESS_MODE_INVALID = 0x00,
     DISK_ACCESS_MODE_READ    = 0x01,
@@ -61,11 +63,6 @@ enum disk_access_flags_t {
 #ifdef BUILD_RC2014
 #include "rc2014/disk.h"
 #define DISK_DEVICE rc2014Disk
-#endif
-
-#ifdef BUILD_H89
-#include "h89/disk.h"
-#define DISK_DEVICE H89Disk
 #endif
 
 #ifdef BUILD_COCO

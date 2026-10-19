@@ -6,7 +6,7 @@
 #define NETWORKPROTOCOL_TELNET
 
 #include "TCP.h"
-
+#include "libtelnet.h"
 
 class NetworkProtocolTELNET : public NetworkProtocolTCP
 {
@@ -29,7 +29,7 @@ public:
                      netProtoTranslation_t translate) override;
 
     /**
-     * @brief Read len bytes into rx_buf, If protocol times out, the buffer should be null padded to length.
+     * @brief Read up to len bytes into rx_buf: fewer if fewer have arrived, an error if none have.
      * @param len Number of bytes to read.
      * @return FUJI_ERROR::NONE on success, FUJI_ERROR::UNSPECIFIED on error
      */
@@ -53,7 +53,7 @@ public:
     std::string *getTransmitBuffer() { return transmitBuffer; }
 
     /**
-     * Flush output transmitBuffer
+     * Send one fragment libtelnet has encoded
      */
     void flush(const char* buf, unsigned short size);
 
@@ -68,6 +68,10 @@ public:
        do NOT report a size (no NAWS), rather than inventing one. */
     int naws_w = 0;
     int naws_h = 0;
+
+private:
+    telnet_t *_telnet = nullptr;
+    bool _sendFailed = false;
 };
 
 #endif /* NETWORKPROTOCOL_TELNET */

@@ -7,6 +7,7 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<script type="text/javascript" src="{{ paths.js_path }}/utils.js"></script>
 	<link rel="stylesheet" href="{{ paths.css_path }}/core.css">
+	{%- block head_extra %}{% endblock %}
 </head>
 
 <body>
@@ -287,6 +288,7 @@
 			</div>
 			{% endif %}
 			{% if components.mount_list %}
+			{%- block mount_list %}
 			<div class="module" {% if components.mount_list == "experimental" %}data-experimental{% endif %}>
 				<header class="module-header">MOUNT<span class="logowob"></span>LIST</header>
 				{% if tweaks.fujiapple %}
@@ -304,7 +306,7 @@
 						<a href="/unmount?deviceslot={{ ds-1 }}">[EJECT]</a>
 					</div>
 					{% endif %}
-					<div class="det detlinecol"><%FN_DRIVE{{ ds }}HOST%> :: <%FN_DRIVE{{ ds }}MOUNT%></div>
+					<div class="det detlinecol"><%FN_DRIVE{{ ds }}HOST%> :: <%FN_DRIVE{{ ds }}MOUNT%> <span class="unmounted"><%FN_DRIVE{{ ds }}STATUS%></span></div>
 				</div>
 				{% endfor %}
 				{% else %}
@@ -314,7 +316,7 @@
 					   Drive Slot {{ ds }}<%FN_DRIVE{{ ds }}DEVICE%>
 					   <a href="/unmount?deviceslot={{ ds-1 }}">[EJECT]</a>
 					</div>
-					<div class="det detlinecol"><%FN_DRIVE{{ ds }}HOST%> :: <%FN_DRIVE{{ ds }}MOUNT%></div>
+					<div class="det detlinecol"><%FN_DRIVE{{ ds }}HOST%> :: <%FN_DRIVE{{ ds }}MOUNT%> <span class="unmounted"><%FN_DRIVE{{ ds }}STATUS%></span></div>
 				</div>
 				{% endfor %}
 				{% endif %}
@@ -326,6 +328,7 @@
 					</div>
 				</div>
 			</div>
+			{%- endblock %}
 			{% endif %}
 			{% if components.printer_settings %}
 			<div class="module" {% if components.printer_settings == "experimental" %}data-experimental{% endif %}>
@@ -1170,6 +1173,28 @@
 							<div class="settings-label">Press to rewind cassette</div>
 							<div class="settings-value">
 								<button type="submit" name="rew" id="rew" value="rew">Rewind</button>
+							</div>
+						</div>
+						</form>
+
+						<form action="/config" method="post" class="settings-45-55">
+						<div class="set">
+							<div class="settings-label">Rewind by</div>
+							<div class="settings-value">
+								<button type="submit" name="rewind_seconds" value="5">-5s</button>
+								<button type="submit" name="rewind_seconds" value="10">-10s</button>
+								<button type="submit" name="rewind_seconds" value="30">-30s</button>
+								<button type="submit" name="rewind_seconds" value="60">-60s</button>
+							</div>
+						</div>
+						</form>
+
+						<form action="/config" method="post" class="settings-45-55">
+						<div class="set">
+							<div class="settings-label">Rewind by N seconds</div>
+							<div class="settings-value">
+								<input type="number" name="rewind_seconds" min="1" step="1" required>
+								<button type="submit">Rewind</button>
 							</div>
 						</div>
 						</form>

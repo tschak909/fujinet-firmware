@@ -44,6 +44,13 @@
 # include "rs232/printerlist.h"
 # include "rs232/rs232cpm.h"
 # include "rs232/rs232Fuji.h"
+# ifdef PINMAP_H89
+#  include "rs232/h89Fuji.h"
+    h89Fuji platformFuji;
+# else
+    rs232Fuji platformFuji;
+# endif
+    fujiDevice *theFuji = &platformFuji;
 
     rs232Modem *sioR;
     rs232CPM sioZ;
@@ -132,16 +139,6 @@ lynxNetStream streamDev;
 # include "rc2014/printerlist.h"
 # include "rc2014/rc2014Fuji.h"
     rc2014Modem *sioR;
-#endif
-
-#ifdef BUILD_H89
-# include "h89/disk.h"
-# include "h89/H89Network.h"
-# include "h89/modem.h"
-# include "h89/printer.h"
-# include "h89/printerlist.h"
-# include "h89/H89Fuji.h"
-    H89Modem *sioR;
 #endif
 
 #endif // DEVICE_H

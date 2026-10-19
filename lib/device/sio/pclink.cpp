@@ -167,27 +167,7 @@ static DEVICE device[16];       /* one PCLINK device with 16 units */
 #  define COM_DATA 1
 
 static void pclink_ack(uchar devno, ushort d, uchar what);
-static uint8_t pclink_read(uint8_t *buf, int len);
 static void pclink_write(uint8_t *buf, int len);
-
-/* Calculate Atari-style CRC for the given buffer
- */
-static uchar
-calc_checksum(uchar *buf, int how_much)
-{
-        uchar cksum = 0;
-        ushort nck;
-        int i;
-
-        for (i = 0; i < how_much; i++)
-        {
-                nck = cksum + buf[i];
-                cksum = (nck > 0x00ff) ? (nck + 1) : nck;
-                cksum &= 0x00ff;
-        }
-
-        return cksum;
-}
 
 static void
 unix_time_2_sdx(time_t *todp, uchar *ob)
@@ -747,22 +727,25 @@ validate_user_path(char *defwd, char *newpath)
 static int
 validate_user_path(char *defwd, char *newpath)
 {
-        char *d, oldwd[1024], newwd[1024];
+    char *d, oldwd[1024], newwd[1024];
 
-        (void)getcwd(oldwd, sizeof(oldwd));
-        if (chdir(newpath) < 0)
-                return 0;
-        (void)getcwd(newwd, sizeof(newwd));
-        (void)chdir(oldwd);
+    if (!getcwd(oldwd, sizeof(oldwd)))
+        return 0;
+    if (chdir(newpath) < 0)
+        return 0;
+    if (!getcwd(newwd, sizeof(newwd)))
+        return 0;
+    if (chdir(oldwd) < 0)
+        return 0;
 
-        d = strstr(newwd, defwd);
+    d = strstr(newwd, defwd);
 
-        if (d == NULL)
-                return 0;
-        if (d != newwd)
-                return 0;
+    if (d == NULL)
+        return 0;
+    if (d != newwd)
+        return 0;
 
-        return 1;
+    return 1;
 }
 
 static int
@@ -907,7 +890,7 @@ timestamp2mtime(uchar *stamp)
 static void
 do_pclink(uchar devno, fujiCommandID_t ccom, uchar caux1, uchar caux2)
 {
-        uchar ck, sck, fno, ob[7], handle;
+        uchar fno, ob[7], handle;
         ushort cunit = caux2 & 0x0f, parsize;
         ulong faux;
         struct stat sb;
@@ -935,17 +918,14 @@ do_pclink(uchar devno, fujiCommandID_t ccom, uchar caux1, uchar caux2)
                 pclink_ack(devno, cunit, 'a');  /* ack the command (late_ack) */
 
                 memset(&pbuf, 0, sizeof(PARBUF));
-                sck = pclink_read((uchar *)&pbuf, (int)parsize);  // read data + checksum byte
-                ck = calc_checksum((uchar *)&pbuf, (int)parsize); // calculate checksum from data
 
                 device[cunit].status.stat &= ~0x02;
 
-                pclink_ack(devno, cunit, 'A');  /* ack the received block */
-
-                if (ck != sck)
+                // Reads the block and acks it; the command itself was accepted above
+                if (SYSTEM_BUS.transaction_get(&pbuf, parsize).is_error())
                 {
                         device[cunit].status.stat |= 0x02;
-                        Debug_printf("PARBLK CRC error, Atari: $%02x, PC: $%02x\n", sck, ck);
+                        Debug_printf("PARBLK CRC error\n");
                         device[cunit].status.err = 143;
                         goto complete;
                 }
@@ -1194,14 +1174,10 @@ do_pclink(uchar devno, fujiCommandID_t ccom, uchar caux1, uchar caux2)
                 //mem = (uchar*)malloc(blk_size + 1);
                 mem = (uchar*)malloc(blk_size);
 
-                sck = pclink_read(mem, blk_size);  // read data + checksum byte
-                ck = calc_checksum(mem, blk_size); // calculate checksum from data
-
-                pclink_ack(devno, cunit, 'A');  /* ack the block of data */
-
-                if (ck != sck)
+                // Reads the block and acks it; the command itself was accepted above
+                if (SYSTEM_BUS.transaction_get(mem, blk_size).is_error())
                 {
-                        Debug_printf("FWRITE: block CRC mismatch (sent $%02x, calculated $%02x)\n", sck, ck);
+                        Debug_printf("FWRITE: block CRC mismatch\n");
                         device[cunit].status.err = 143;
                         free(mem);
                         goto complete;
@@ -1671,21 +1647,21 @@ do_pclink(uchar devno, fujiCommandID_t ccom, uchar caux1, uchar caux2)
                                 }
 
                                 if ((device[cunit].parbuf.fmode & 0x0d) == 0x04)
-                                        iodesc[i].fps.file = fopen(newpath, "r");
+                                        iodesc[i].fps.file = fopen(newpath, "rb");
                                 else if ((device[cunit].parbuf.fmode & 0x0d) == 0x08)
                                 {
-                                        iodesc[i].fps.file = fopen(newpath, "w");
+                                        iodesc[i].fps.file = fopen(newpath, "wb");
                                         if (iodesc[i].fps.file)
                                                 sb.st_size = 0;
                                 }
                                 else if ((device[cunit].parbuf.fmode & 0x0d) == 0x09)
                                 {
-                                        iodesc[i].fps.file = fopen(newpath, "r+");
+                                        iodesc[i].fps.file = fopen(newpath, "r+b");
                                         if (iodesc[i].fps.file)
                                                 fseek(iodesc[i].fps.file, sb.st_size, SEEK_SET);
                                 }
                                 else if ((device[cunit].parbuf.fmode & 0x0d) == 0x0c)
-                                        iodesc[i].fps.file = fopen(newpath, "r+");
+                                        iodesc[i].fps.file = fopen(newpath, "r+b");
 
                                 closedir(dh);
                                 dp = NULL;
@@ -2488,41 +2464,6 @@ exit:
 }
 
 /*
- * PCLink specific version of bus_to_peripheral(), no ACK/NAK is send here
- */
-static uint8_t
-pclink_read(uint8_t *buf, int len)
-{
-    // Retrieve data frame from computer
-    Debug_printf("<-SIO read (PCLINK) %hu bytes\n", len);
-
-#ifndef ESP_PLATFORM
-    if (SYSTEM_BUS.isBoIP())
-    {
-        SYSTEM_BUS.netsio_write_size(len); // set hint for NetSIO
-    }
-#endif
-
-    __BEGIN_IGNORE_UNUSEDVARS
-    size_t l = SYSTEM_BUS.read(buf, len);
-    __END_IGNORE_UNUSEDVARS
-
-    // Wait for checksum
-    while (SYSTEM_BUS.available() <= 0)
-        fnSystem.yield();
-    uint8_t ck_rcv = SYSTEM_BUS.read();
-
-#ifdef VERBOSE_SIO
-    Debug_printf("RECV <%u> BYTES, checksum: %hu\n\t", (unsigned int)l, ck_rcv);
-    for (int i = 0; i < len; i++)
-        Debug_printf("%02x ", buf[i]);
-    Debug_print("\n");
-#endif
-
-    return ck_rcv;
-}
-
-/*
  * PCLink specific version of bus_to_computer(), no C/E is send here
  */
 static void
@@ -2594,10 +2535,8 @@ void sioPCLink::send_ack_byte(uint8_t  what)
         switch (what)
         {
         case 'a':
-#ifndef ESP_PLATFORM
         SYSTEM_BUS.transaction_accept(TRANS_STATE::WILL_GET);
         break;
-#endif
     case 'A':
         SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
         break;

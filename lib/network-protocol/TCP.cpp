@@ -109,7 +109,7 @@ fujiError_t NetworkProtocolTCP::close()
 }
 
 /**
- * @brief Read len bytes into rx_buf, If protocol times out, the buffer should be null padded to length.
+ * @brief Read up to len bytes into rx_buf: fewer if fewer have arrived, an error if none have.
  * @param len number of bytes to read.
  * @return FUJI_ERROR::NONE on success, FUJI_ERROR::UNSPECIFIED on error
  */
@@ -122,27 +122,20 @@ fujiError_t NetworkProtocolTCP::read(unsigned short len)
 
     if (receiveBuffer->length() == 0)
     {
-        // Do the read from client socket.
+        // Never blocks, so a short count is just what has arrived so far.
         actual_len = client.read(newData.data(), len);
 
-        // bail if the connection is reset.
-        if (errno == ECONNRESET)
+        if (actual_len == 0)
         {
-            error = NDEV_STATUS::CONNECTION_RESET;
-            return FUJI_ERROR::UNSPECIFIED;
-        }
-        else if (actual_len != len) // Read was short and timed out.
-        {
-            Debug_printf("Short receive. We got %u bytes, returning %u bytes and ERROR\r\n", actual_len, len);
             error = NDEV_STATUS::SOCKET_TIMEOUT;
             return FUJI_ERROR::UNSPECIFIED;
         }
 
         // Add new data to buffer.
-        receiveBuffer->insert(receiveBuffer->end(), newData.begin(), newData.end());
+        receiveBuffer->insert(receiveBuffer->end(), newData.begin(), newData.begin() + actual_len);
 
         // Translate the freshly-read bytes exactly once.
-        return NetworkProtocol::read(len);
+        return NetworkProtocol::read(actual_len);
     }
 
     // receiveBuffer already holds translated data (e.g. auto-read during status);
@@ -154,7 +147,7 @@ fujiError_t NetworkProtocolTCP::read(unsigned short len)
 /**
  * @brief Write len bytes from tx_buf to protocol.
  * @param len The # of bytes to transmit, len should not be larger than buffer.
- * @return Number of bytes written.
+ * @return FUJI_ERROR::NONE on success, FUJI_ERROR::UNSPECIFIED on error
  */
 fujiError_t NetworkProtocolTCP::write(unsigned short len)
 {
@@ -165,6 +158,7 @@ fujiError_t NetworkProtocolTCP::write(unsigned short len)
     // Check for client connection
     if (!client.connected())
     {
+        transmitBuffer->clear();
         error = NDEV_STATUS::NOT_CONNECTED;
         return FUJI_ERROR::UNSPECIFIED; // error
     }
@@ -175,22 +169,20 @@ fujiError_t NetworkProtocolTCP::write(unsigned short len)
     // Do the write to client socket.
     actual_len = client.write((uint8_t *)transmitBuffer->data(), len);
 
-    // bail if the connection is reset.
-    if (errno == ECONNRESET)
-    {
-        error = NDEV_STATUS::CONNECTION_RESET;
-        return FUJI_ERROR::UNSPECIFIED;
-    }
-    else if (actual_len != len) // write was short.
+    // Sent or not, the data is gone: kept, a later WRITE would resend it and
+    // translate it a second time.
+    transmitBuffer->clear();
+
+    if (actual_len != len) // write was short.
     {
         Debug_printf("Short send. We sent %u bytes, but asked to send %u bytes.\r\n", actual_len, len);
-        error = NDEV_STATUS::SOCKET_TIMEOUT;
+        // The client stops itself on a send error, so a dead one was reset, not stalled.
+        error = client.connected() ? NDEV_STATUS::SOCKET_TIMEOUT : NDEV_STATUS::CONNECTION_RESET;
         return FUJI_ERROR::UNSPECIFIED;
     }
 
     // Return success
     error = NDEV_STATUS::SUCCESS;
-    transmitBuffer->erase(0, len);
 
     return FUJI_ERROR::NONE;
 }
@@ -301,10 +293,17 @@ fujiError_t NetworkProtocolTCP::accept_connection()
         return FUJI_ERROR::UNSPECIFIED; // Error
     }
 
+    // Accepting now would close the live session; a waiting caller stays queued.
+    if (client.connected())
+    {
+        error = NDEV_STATUS::CONNECTION_ALREADY_IN_PROGRESS;
+        return FUJI_ERROR::UNSPECIFIED;
+    }
+
     if (server->hasClient())
     {
         in_addr_t remoteIP;
-        unsigned char remotePort;
+        uint16_t remotePort;
         char *remoteIPString;
 
         client = server->client();
@@ -337,21 +336,21 @@ fujiError_t NetworkProtocolTCP::accept_connection()
 fujiError_t NetworkProtocolTCP::close_client_connection()
 {
     in_addr_t remoteIP;
-    unsigned char remotePort;
+    uint16_t remotePort;
     char *remoteIPString;
 
     if (server == nullptr)
     {
         Debug_printf("Attempted close client connection on NULL server socket. Aborting.\r\n");
         error = NDEV_STATUS::SERVER_NOT_RUNNING;
-        return FUJI_ERROR::NONE;
+        return FUJI_ERROR::UNSPECIFIED;
     }
 
     if (!client.connected())
     {
         Debug_printf("Attempted close client with no client connected.\r\n");
         error = NDEV_STATUS::NOT_CONNECTED;
-        return FUJI_ERROR::NONE;
+        return FUJI_ERROR::NONE; // nothing to close is not an error
     }
 
     remoteIP = client.remoteIP();
@@ -367,5 +366,5 @@ fujiError_t NetworkProtocolTCP::close_client_connection()
 
     client.stop();
 
-    return FUJI_ERROR::UNSPECIFIED;
+    return FUJI_ERROR::NONE;
 }

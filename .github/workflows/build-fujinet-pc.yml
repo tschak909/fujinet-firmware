@@ -45,38 +45,20 @@ on:
 #   # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
 #   BUILD_TYPE: ${{ github.event.inputs.buildType }}
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     strategy:
       fail-fast: false
       matrix:
         os:
-          - name: Ubuntu 22.04
-            runner: ubuntu-22.04
-            target: ubuntu-22.04-amd64
-            default-shell: bash
           - name: Ubuntu 24.04
             runner: ubuntu-24.04
             target: ubuntu-24.04-amd64
             default-shell: bash
-          - name: Ubuntu 24.04 ARM64
-            runner: ubuntu-24.04-arm
-            target: ubuntu-24.04-arm64
-            default-shell: bash
-          # 32-bit ARM (armhf) cross-build on the arm64 runner; its cores still
-          # execute AArch32, so the unit tests run natively under ctest
-          - name: Ubuntu 24.04 ARMv7
-            runner: ubuntu-24.04-arm
-            target: ubuntu-24.04-armhf
-            default-shell: bash
-            cmake-args: >-
-              -DCMAKE_C_COMPILER=arm-linux-gnueabihf-gcc
-              -DCMAKE_CXX_COMPILER=arm-linux-gnueabihf-g++
-              -DMBEDTLS_INCLUDE_DIR=/usr/include
-              -DMBEDTLS_LIBRARY_DIR=/usr/lib/arm-linux-gnueabihf
-              -DOPENSSL_INCLUDE_DIR=/usr/include
-              -DOPENSSL_CRYPTO_LIBRARY=/usr/lib/arm-linux-gnueabihf/libcrypto.so
-              -DOPENSSL_SSL_LIBRARY=/usr/lib/arm-linux-gnueabihf/libssl.so
           - name: macOS 15 ARM
             target: macos-15-arm64
             runner: macos-15
@@ -190,7 +172,7 @@ jobs:
     - name: '[regular OS] 🚧 Build FujiNet-PC (matrix.fujinet_target)'
       if: ${{ !startsWith(matrix.os.target, 'windows') }}
       run: |
-        ./build.sh -p ${{ matrix.fujinet_target }} -- ${{ matrix.os.cmake-args }}
+        ./build.sh -y -p ${{ matrix.fujinet_target }} -- ${{ matrix.os.cmake-args }}
 
     # For MSYS tune PATH variable for PYTHON:
     # add 'C:\hostedtoolcache\windows\Python\3.10.11\x64' as '/c/hostedtoolcache/windows/Python/3.10.11/x64'
@@ -199,7 +181,7 @@ jobs:
       run: |
         export PATH=$(printenv pythonLocation | sed 's@\\@/@g' | sed 's@^c:/@/c/@i'):$PATH
         printenv PATH
-        ./build.sh -p ${{ matrix.fujinet_target }}
+        ./build.sh -y -p ${{ matrix.fujinet_target }}
 
     # - name: Configure CMake
     #   #run: cmake -B build -DFUJINET_TARGET=${{matrix.fujinet_target}} -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}}

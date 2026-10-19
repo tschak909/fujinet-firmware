@@ -85,7 +85,7 @@ void IRAM_ATTR phi_isr_handler(void *arg)
               // Debug_printf("\nhello from ISR - control command!");
               if (smartport.req_wait_for_falling_timeout(5500))
               {
-                Debug_printf("\nWRITE/CTRL received\nREQ timeout in ISR");
+                smartport.isr_req_timeouts += 1;
                 return;
               }
               memset(smartport.packet_buffer, 0, sizeof(smartport.packet_buffer));
@@ -102,7 +102,7 @@ void IRAM_ATTR phi_isr_handler(void *arg)
       }
       else if (error == 2) // checksum error
       {
-        Debug_printf("\r\nISR Cmd Chksum error, calc %02x, pkt %02x", smartport.calc_checksum, smartport.pkt_checksum);
+        smartport.isr_cmd_checksum_errors += 1;
       }
       // initial Req timeout (error==1) and checksum (error==2) just fall through here and we try again next time
       smartport.spi_end();
@@ -116,10 +116,10 @@ void IRAM_ATTR phi_isr_handler(void *arg)
       }
       else if (error == 2) // checksum error
       {
-        Debug_printf("\r\nISR Data Packet Chksum error, calc %02x, pkt %02x command = %02x", smartport.calc_checksum, smartport.pkt_checksum,SYSTEM_BUS.command_packet.command & 0x0f);
+        smartport.isr_data_checksum_errors += 1;
         /*We sometimes get garbage data packets with control code 0 commands, accept them as-is and go on*/
         if((SYSTEM_BUS.command_packet.command == 0x84) && (SYSTEM_BUS.command_packet.data[19] == 0x80)) {
-          Debug_printf("\r\nIgnoring bad data packet");
+          smartport.isr_data_packets_ignored += 1;
           smartport.iwm_ack_clr();
           sp_command_mode = sp_cmd_state_t::command;
         }
@@ -383,10 +383,7 @@ int IRAM_ATTR iwm_sp_ll::iwm_read_packet_spi(uint8_t* buffer, int packet_len)
   // setup a timeout counter to wait for REQ response
   if (req_wait_for_rising_timeout(10000))
   { // timeout!
-#ifdef VERBOSE_IWM
-    // timeout
-    Debug_print("t");
-#endif
+    isr_req_timeouts += 1;
     iwm_extra_clr();
     return 1; // timeout waiting for REQ
   }
@@ -894,7 +891,7 @@ void IRAM_ATTR iwm_diskii_ll::diskii_write_handler()
     // for space before allocating. Race-free - this ISR is the sole producer.
     if (uxQueueMessagesWaitingFromISR(iwm_write_queue) >= IWM_WRITE_QUEUE_DEPTH)
     {
-      iwm_write_drops++;
+      iwm_write_drops += 1;
       d2w_writing = false;
       return;
     }
@@ -902,8 +899,7 @@ void IRAM_ATTR iwm_diskii_ll::diskii_write_handler()
     item.buffer = (decltype(item.buffer)) heap_caps_malloc(item.length, MALLOC_CAP_8BIT);
     if (!item.buffer)
     {
-      Debug_printf("\r\nDisk II unable to allocate buffer! %u %u %u",
-                   item.length, item.track_begin, item.track_end);
+      d2w_alloc_failures += 1;
     }
     else {
       size_t end1, end2;
@@ -923,7 +919,7 @@ void IRAM_ATTR iwm_diskii_ll::diskii_write_handler()
         memcpy(&item.buffer[end1], d2w_buffer, end2);
       }
       if (xQueueSendFromISR(iwm_write_queue, &item, &woken) != pdTRUE)
-        iwm_write_drops++; // unreachable after the space pre-check; buffer is lost
+        iwm_write_drops += 1; // unreachable after the space pre-check; buffer is lost
     }
     d2w_writing = false;
   }
@@ -946,7 +942,7 @@ void iwm_diskii_ll::start(uint8_t drive, bool write_protect)
       d2w_buflen = cspi_alloc_continuous(IWM_NUMBYTES_FOR_BITS(D2W_MAXBUF, d2w_buffer),
                                          D2W_CHUNK_SIZE, &d2w_buffer, &d2w_desc);
 #endif
-      if (d2w_desc) {
+      if (d2w_desc && iwm_write_queue != nullptr) {
         gpio_isr_handler_add(SP_WREQ, diskii_write_handler_forwarder, (void *) this);
         cspi_begin_continuous(smartport.spirx, d2w_desc);
         d2w_started = true;
@@ -1105,7 +1101,7 @@ size_t IRAM_ATTR iwm_diskii_ll::encode_rmt_bitstream(const void *src, size_t src
         outbit = window & 0x02;
       else
         {
-          const uint8_t MC3470[] = {0b01010000, 0b10110011, 0b01000010, 0b00000000, 0b10101101, 0b00000010, 0b01101000, 0b01000110, 0b00000001, 0b10010000, 0b00001000, 0b00111000, 0b00001000, 0b00100101, 0b10000100, 0b00001000, 0b10001000, 0b01100010, 0b10101000, 0b01101000, 0b10010000, 0b00100100, 0b00001011, 0b00110010, 0b11100000, 0b01000001, 0b10001010, 0b00000000, 0b11000001, 0b10001000, 0b10001000, 0b00000000};
+          static const DRAM_ATTR uint8_t MC3470[] = {0b01010000, 0b10110011, 0b01000010, 0b00000000, 0b10101101, 0b00000010, 0b01101000, 0b01000110, 0b00000001, 0b10010000, 0b00001000, 0b00111000, 0b00001000, 0b00100101, 0b10000100, 0b00001000, 0b10001000, 0b01100010, 0b10101000, 0b01101000, 0b10010000, 0b00100100, 0b00001011, 0b00110010, 0b11100000, 0b01000001, 0b10001010, 0b00000000, 0b11000001, 0b10001000, 0b10001000, 0b00000000};
 
           static int MC3470_byte_ctr;
           static int MC3470_bit_ctr;
@@ -1137,6 +1133,10 @@ void iwm_diskii_ll::setup_rmt()
 
   // SPI continuous
   iwm_write_queue = xQueueCreate(IWM_WRITE_QUEUE_DEPTH, sizeof(iwm_write_data));
+  if (iwm_write_queue == nullptr)
+    // start() refuses to install the write ISR without it - Disk II writes disabled.
+    Debug_printv("could not create Disk II write queue, free internal/total heap: %lu/%lu",
+                 esp_get_free_internal_heap_size(), esp_get_free_heap_size());
 
   track_buffer = (uint8_t *)heap_caps_malloc(TRACK_LEN, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   if (track_buffer == NULL)

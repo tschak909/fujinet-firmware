@@ -18,6 +18,23 @@ target_link_libraries(fujibuspacket_tests PRIVATE
 add_test(NAME fujibuspacket_tests COMMAND fujibuspacket_tests)
 
 # ------------------------------------------------------------------------------
+# lib/bus/DaisyChain: device-ID rotation behind the disk swap. Pure code; the
+# test supplies its own empty virtualDevice.
+# ------------------------------------------------------------------------------
+add_executable(daisychain_tests
+    DaisyChainTests.cpp
+    ${CMAKE_SOURCE_DIR}/lib/bus/DaisyChain.cpp
+)
+
+target_include_directories(daisychain_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/include/
+    ${CMAKE_SOURCE_DIR}/lib/bus/
+    ${CMAKE_SOURCE_DIR}/components_pc/   # doctest
+)
+
+add_test(NAME daisychain_tests COMMAND daisychain_tests)
+
+# ------------------------------------------------------------------------------
 # UTF-8 / HTML-entity folding to ASCII. fn_sanitize is deliberately free of any
 # parser or protocol dependency, so the entity tables and the transliteration
 # edge cases are pinned here rather than on hardware.
@@ -33,6 +50,47 @@ target_include_directories(fn_sanitize_tests PRIVATE
 )
 
 add_test(NAME fn_sanitize_tests COMMAND fn_sanitize_tests)
+
+# ------------------------------------------------------------------------------
+# PeoplesUrlParser, including getFilePath() for file-name paths (#1790).
+# Its utils dependencies need MbedTLS crypto and the same compat sources and
+# libraries as the fujinet executable.
+# ------------------------------------------------------------------------------
+add_executable(url_parser_tests
+    PeoplesUrlParserTests.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/peoples_url_parser.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/string_utils.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/utils.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/U8Char.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/punycode.cpp
+    ${CMAKE_SOURCE_DIR}/lib/compat/compat_gettimeofday.c
+)
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    target_sources(url_parser_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/lib/compat/strlcat.c
+        ${CMAKE_SOURCE_DIR}/lib/compat/strlcpy.c
+    )
+endif()
+
+target_include_directories(url_parser_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/include/
+    ${CMAKE_SOURCE_DIR}/lib/
+    ${CMAKE_SOURCE_DIR}/lib/utils/
+    ${CMAKE_SOURCE_DIR}/lib/compat/
+    ${CMAKE_SOURCE_DIR}/lib/sam/
+    ${CMAKE_SOURCE_DIR}/components_pc/   # doctest
+    ${MBEDTLS_INCLUDE_DIR}
+)
+
+target_link_libraries(url_parser_tests PRIVATE ${MBEDCRYPTO_STATIC_LIB})
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    target_include_directories(url_parser_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/components_pc/libsmb2/include/   # asprintf.h
+    )
+    target_link_libraries(url_parser_tests PRIVATE bcrypt)
+endif()
+
+add_test(NAME url_parser_tests COMMAND url_parser_tests)
 
 # ------------------------------------------------------------------------------
 # The XPath-subset query engine. Split out of FNXML precisely so it can be
@@ -73,6 +131,22 @@ target_include_directories(calendar_tests PRIVATE
 add_test(NAME calendar_tests COMMAND calendar_tests)
 
 # ------------------------------------------------------------------------------
+# QR code version and ECC selection. qrcode.c is plain C with no FujiNet
+# dependency, so the capacity edges are pinned here rather than by scanning.
+# ------------------------------------------------------------------------------
+add_executable(qrcode_tests
+    QRCodeTests.cpp
+    ${CMAKE_SOURCE_DIR}/lib/qrcode/qrcode.c
+)
+
+target_include_directories(qrcode_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/lib/
+    ${CMAKE_SOURCE_DIR}/components_pc/   # doctest
+)
+
+add_test(NAME qrcode_tests COMMAND qrcode_tests)
+
+# ------------------------------------------------------------------------------
 # Mail draft parsing and RFC822 assembly (compose / reply). mail_draft depends
 # only on the standard library, so the EOL and threading edge cases are pinned
 # here rather than on hardware.
@@ -89,6 +163,124 @@ target_include_directories(mail_tests PRIVATE
 )
 
 add_test(NAME mail_tests COMMAND mail_tests)
+
+# ------------------------------------------------------------------------------
+# IMD (ImageDisk) core media type.
+# UNIT_TESTS is required - fujinet_pc.cmake puts -DDBUG2 on CMAKE_CXX_FLAGS,
+# which turns on DEBUG, which makes debug.h pull in <utils.h> that we do not
+# link here. debug.h undefines DEBUG when UNIT_TESTS is set.
+# FNIO_IS_STDIO pins fnFile to std::FILE: we inherit -D${FUJINET_BUILD_PLATFORM}
+# from CMAKE_CXX_FLAGS, which would otherwise select FileHandler and drag the
+# whole FileSystem stack in. The FileHandler path is covered by the ESP builds,
+# which glob lib/media/*.cpp into every target.
+# ------------------------------------------------------------------------------
+add_executable(imdimage_tests
+    IMDImageTests.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/IMDImage.cpp
+)
+
+target_compile_definitions(imdimage_tests PRIVATE UNIT_TESTS FNIO_IS_STDIO)
+
+target_include_directories(imdimage_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/include/      # debug.h, global_types.h
+    ${CMAKE_SOURCE_DIR}/lib/
+    ${CMAKE_SOURCE_DIR}/lib/FileSystem/
+    ${CMAKE_SOURCE_DIR}/lib/media/
+    ${CMAKE_SOURCE_DIR}/components_pc/
+)
+
+if(WIN32)
+    target_link_libraries(imdimage_tests PRIVATE ws2_32)
+endif()
+
+add_test(NAME imdimage_tests COMMAND imdimage_tests)
+
+# ------------------------------------------------------------------------------
+# The RS232 MediaTypeIMD adapter. BUILD_RS232 selects the rs232 media layer;
+# the adapter deliberately includes nothing from lib/device or lib/bus, so the
+# media sources alone link. See imdimage_tests above for UNIT_TESTS/FNIO_IS_STDIO.
+# ------------------------------------------------------------------------------
+add_executable(mediatypeimd_tests
+    MediaTypeIMDTests.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/IMDImage.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/rs232/diskType.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/rs232/diskTypeAltair.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/rs232/diskTypeIMD.cpp
+)
+
+target_compile_definitions(mediatypeimd_tests PRIVATE BUILD_RS232 UNIT_TESTS FNIO_IS_STDIO)
+
+target_include_directories(mediatypeimd_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/include/      # debug.h, global_types.h
+    ${CMAKE_SOURCE_DIR}/lib/
+    ${CMAKE_SOURCE_DIR}/lib/FileSystem/
+    ${CMAKE_SOURCE_DIR}/lib/media/
+    ${CMAKE_SOURCE_DIR}/lib/media/rs232/
+    ${CMAKE_SOURCE_DIR}/lib/utils/
+    ${CMAKE_SOURCE_DIR}/components_pc/
+)
+
+if(WIN32)
+    target_link_libraries(mediatypeimd_tests PRIVATE ws2_32)
+endif()
+
+add_test(NAME mediatypeimd_tests COMMAND mediatypeimd_tests)
+
+# ------------------------------------------------------------------------------
+# The RS232 MediaTypeAltair adapter, built like mediatypeimd_tests above.
+# ------------------------------------------------------------------------------
+add_executable(mediatypealtair_tests
+    MediaTypeAltairTests.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/IMDImage.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/rs232/diskType.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/rs232/diskTypeAltair.cpp
+)
+
+target_compile_definitions(mediatypealtair_tests PRIVATE BUILD_RS232 UNIT_TESTS FNIO_IS_STDIO)
+
+target_include_directories(mediatypealtair_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/include/      # debug.h, global_types.h
+    ${CMAKE_SOURCE_DIR}/lib/
+    ${CMAKE_SOURCE_DIR}/lib/FileSystem/
+    ${CMAKE_SOURCE_DIR}/lib/media/
+    ${CMAKE_SOURCE_DIR}/lib/media/rs232/
+    ${CMAKE_SOURCE_DIR}/lib/utils/
+    ${CMAKE_SOURCE_DIR}/components_pc/
+)
+
+if(WIN32)
+    target_link_libraries(mediatypealtair_tests PRIVATE ws2_32)
+endif()
+
+add_test(NAME mediatypealtair_tests COMMAND mediatypealtair_tests)
+
+# ------------------------------------------------------------------------------
+# FileSystemSDFAT listings over a local directory, as on FujiNet-PC. See
+# imdimage_tests above for UNIT_TESTS/FNIO_IS_STDIO.
+# ------------------------------------------------------------------------------
+add_executable(fssd_listing_tests
+    FsSDListingTests.cpp
+    ${CMAKE_SOURCE_DIR}/lib/FileSystem/fnFS.cpp
+    ${CMAKE_SOURCE_DIR}/lib/FileSystem/fnFsSD.cpp
+)
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+  target_sources(fssd_listing_tests PRIVATE
+      ${CMAKE_SOURCE_DIR}/lib/compat/strlcpy.c
+      ${CMAKE_SOURCE_DIR}/lib/compat/strlcat.c
+  )
+endif()
+
+target_compile_definitions(fssd_listing_tests PRIVATE UNIT_TESTS FNIO_IS_STDIO)
+
+target_include_directories(fssd_listing_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/include/      # debug.h, global_types.h
+    ${CMAKE_SOURCE_DIR}/lib/FileSystem/
+    ${CMAKE_SOURCE_DIR}/lib/compat/
+    ${CMAKE_SOURCE_DIR}/lib/utils/
+    ${CMAKE_SOURCE_DIR}/components_pc/
+)
+
+add_test(NAME fssd_listing_tests COMMAND fssd_listing_tests)
 
 # ------------------------------------------------------------------------------
 # Policy check: no platform-specific BUILD_* ifdefs in the shared device bases.
@@ -121,12 +313,14 @@ add_test(
 )
 
 if(FUJINET_TARGET STREQUAL "ATARI")
-  add_executable(sio_dstats_tests
-    sioNetwork-DSTATS-test.cpp
+  # sioNetwork and NDevice with stubs for everything they pull in, shared by
+  # the DSTATS test, the sioNetwork command tests and the NDevice tests.
+  add_library(sio_network_stubs OBJECT
+    sioNetworkStubs.cpp
     ${CMAKE_SOURCE_DIR}/lib/device/NDevice/NDevice.cpp
     ${CMAKE_SOURCE_DIR}/lib/device/sio/sioNetwork.cpp
     )
-  target_include_directories(sio_dstats_tests PRIVATE
+  target_include_directories(sio_network_stubs PUBLIC
     ${CMAKE_SOURCE_DIR}/include/
     ${CMAKE_SOURCE_DIR}/lib/
     ${CMAKE_SOURCE_DIR}/lib/bus/
@@ -163,8 +357,20 @@ if(FUJINET_TARGET STREQUAL "ATARI")
     ${CMAKE_SOURCE_DIR}/components/gumbo-query/
     ${MBEDTLS_INCLUDE_DIR}
     )
-  target_link_libraries(sio_dstats_tests PRIVATE)
+
+  add_executable(sio_dstats_tests sioNetwork-DSTATS-test.cpp)
+  target_link_libraries(sio_dstats_tests PRIVATE sio_network_stubs)
   add_test(NAME sio_dstats_tests COMMAND sio_dstats_tests)
+
+  # What sioNetwork sends back for a command, through the bus stubs.
+  add_executable(sio_network_tests sioNetworkTests.cpp)
+  target_link_libraries(sio_network_tests PRIVATE sio_network_stubs)
+  add_test(NAME sio_network_tests COMMAND sio_network_tests)
+
+  # The shared NDevice on its own; ATARI-only only because the stubs are.
+  add_executable(ndevice_tests NDeviceTests.cpp)
+  target_link_libraries(ndevice_tests PRIVATE sio_network_stubs)
+  add_test(NAME ndevice_tests COMMAND ndevice_tests)
 
   # ----------------------------------------------------------------------------
   # The query output mode, end to end through a real parser: NET_SET_PARAMETER
@@ -174,9 +380,13 @@ if(FUJINET_TARGET STREQUAL "ATARI")
   #
   # ATARI-only for the same reason as sio_dstats_tests: the bus headers need a
   # concrete systemBus.
+  #
+  # NParserReadTests.cpp shares its stubs: NParser::read() when the protocol
+  # leaves fewer bytes than asked for (#1689).
   # ----------------------------------------------------------------------------
   add_executable(nquery_output_mode_tests
     NQueryOutputModeTests.cpp
+    NParserReadTests.cpp
     ${CMAKE_SOURCE_DIR}/lib/device/NDevice/NParser.cpp
     ${CMAKE_SOURCE_DIR}/lib/device/NDevice/XMLParser.cpp
     ${CMAKE_SOURCE_DIR}/lib/fntext/fn_sanitize.cpp
@@ -261,6 +471,35 @@ else()
   message(STATUS "sys/queue.h not available - skipping http_header_tests")
 endif()
 
+# The ESP-only WebDAV server's registered methods, against a stub http_parser.h.
+add_executable(webdav_methods_tests
+    WebDavMethodsTests.cpp
+)
+
+target_include_directories(webdav_methods_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests/esp_stubs/           # http_parser.h
+    ${CMAKE_SOURCE_DIR}/lib/http/webdav/
+    ${CMAKE_SOURCE_DIR}/components_pc/             # doctest
+)
+
+add_test(NAME webdav_methods_tests COMMAND webdav_methods_tests)
+
+# Files moving through the ESP-only WebDAV server (#1839), over the real
+# lib/http/webdav and Meatloaf FlashMFile code. Meatloaf does not compile on
+# a host, so webdav_transfer_test.py mirrors the needed sources into the
+# build directory, trims meatloaf.cpp to the Flash filesystem, and compiles
+# them with the stand-ins in tests/webdav/ and a fake esp_http_server.
+if(UNIX)
+  add_test(NAME webdav_transfer_tests COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/webdav_transfer_test.py
+      --compiler ${CMAKE_CXX_COMPILER}
+      --source ${CMAKE_SOURCE_DIR}
+      --work ${CMAKE_CURRENT_BINARY_DIR}/webdav_transfer
+      --mbedtls-include "${MBEDTLS_INCLUDE_DIR}"
+      --mbedtls-lib "${MBEDTLS_LIBRARY_DIR}")
+  set_tests_properties(webdav_transfer_tests PROPERTIES TIMEOUT 300)
+endif()
+
 # ------------------------------------------------------------------------------
 # Macintosh GCR floppy encoder. Pure C++, no platform dependencies. Encodes a
 # synthetic 800K disk and decodes every sector back with an independent
@@ -272,3 +511,278 @@ add_executable(mac_gcr_tests
 )
 target_include_directories(mac_gcr_tests PRIVATE ${CMAKE_SOURCE_DIR}/lib/)
 add_test(NAME mac_gcr_tests COMMAND mac_gcr_tests)
+
+# ------------------------------------------------------------------------------
+# Atari cassette rewind: record durations (lib/media/atari/casTape.h), and the
+# request and the trail of played boundaries (lib/device/sio/cassette*.h). None
+# of them touches the bus, a file or the RTOS, so they are driven here directly.
+# ------------------------------------------------------------------------------
+add_executable(cassette_tests
+    CasTapeTests.cpp
+    CassetteRewindRequestTests.cpp
+    CassetteTrailTests.cpp
+    ${CMAKE_SOURCE_DIR}/lib/device/sio/cassetteTrail.cpp
+)
+
+target_include_directories(cassette_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/lib/
+    ${CMAKE_SOURCE_DIR}/components_pc/   # doctest
+)
+
+add_test(NAME cassette_tests COMMAND cassette_tests)
+
+# ------------------------------------------------------------------------------
+# A8CAS `fsk ` chunk interpretation for basic (non-progressive) FSK playback
+# (lib/media/atari/casFSK.h/.cpp). Pure/host-buildable: no ESP-IDF, no RMT, no
+# file ownership -- driven here directly via an in-memory FSKReadFn fixture.
+# ------------------------------------------------------------------------------
+add_executable(casfsk_tests
+    CasFSKTests.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/atari/casFSK.cpp
+)
+
+target_include_directories(casfsk_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/lib/
+    ${CMAKE_SOURCE_DIR}/components_pc/   # doctest
+)
+
+add_test(NAME casfsk_tests COMMAND casfsk_tests)
+
+# ------------------------------------------------------------------------------
+# Progressive FSK loading: the value-to-symbol encoder (casFSK.h) and the loader
+# (lib/media/atari/casFSKLoader.h), driven over synthetic images.
+# ------------------------------------------------------------------------------
+find_package(Threads REQUIRED)
+
+add_executable(casfskloader_tests
+    CasFSKLoaderTests.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/atari/casFSK.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/atari/casFSKLoader.cpp
+)
+
+target_include_directories(casfskloader_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/lib/
+    ${CMAKE_SOURCE_DIR}/include/         # global_types.h
+    ${CMAKE_SOURCE_DIR}/components_pc/   # doctest
+)
+
+target_link_libraries(casfskloader_tests PRIVATE Threads::Threads)
+
+add_test(NAME casfskloader_tests COMMAND casfskloader_tests)
+
+# ------------------------------------------------------------------------------
+# Reading a file that can lose its position (lib/device/sio/cassetteFSKRead.h),
+# alone and under the loader, over a fake cursor-based remote file.
+# ------------------------------------------------------------------------------
+add_executable(cassettefskread_tests
+    CassetteFSKReadTests.cpp
+    ${CMAKE_SOURCE_DIR}/lib/device/sio/cassetteFSKRead.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/atari/casFSK.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/atari/casFSKLoader.cpp
+)
+
+target_include_directories(cassettefskread_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/lib/
+    ${CMAKE_SOURCE_DIR}/include/         # global_types.h
+    ${CMAKE_SOURCE_DIR}/components_pc/   # doctest
+)
+
+add_test(NAME cassettefskread_tests COMMAND cassettefskread_tests)
+
+# ------------------------------------------------------------------------------
+# The N: TCP protocol (lib/network-protocol/TCP.cpp) over the fake socket in
+# tcp_harness/.
+# ------------------------------------------------------------------------------
+add_executable(tcp_protocol_tests
+    TCPProtocolTests.cpp
+    ${CMAKE_SOURCE_DIR}/lib/network-protocol/TCP.cpp
+    ${CMAKE_SOURCE_DIR}/lib/network-protocol/Protocol.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/peoples_url_parser.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/string_utils.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/utils.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/U8Char.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/punycode.cpp
+    ${CMAKE_SOURCE_DIR}/lib/compat/compat_inet.c
+    ${CMAKE_SOURCE_DIR}/lib/compat/compat_gettimeofday.c
+)
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+  target_sources(tcp_protocol_tests PRIVATE
+      ${CMAKE_SOURCE_DIR}/lib/compat/strlcpy.c
+      ${CMAKE_SOURCE_DIR}/lib/compat/strlcat.c
+  )
+endif()
+
+target_include_directories(tcp_protocol_tests BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests/tcp_harness/    # first: replaces fnTcpClient.h, fnTcpServer.h, bus.h
+    ${CMAKE_SOURCE_DIR}/lib/network-protocol/
+    ${CMAKE_SOURCE_DIR}/lib/device/fujiDevice/
+    ${CMAKE_SOURCE_DIR}/lib/utils/
+    ${CMAKE_SOURCE_DIR}/lib/sam/
+    ${CMAKE_SOURCE_DIR}/lib/compat/
+    ${CMAKE_SOURCE_DIR}/include/
+    ${CMAKE_SOURCE_DIR}/components_pc/        # doctest
+    ${CMAKE_SOURCE_DIR}/components_pc/libsmb2/include/   # asprintf.h on Windows
+    ${MBEDTLS_INCLUDE_DIR}
+)
+target_compile_definitions(tcp_protocol_tests PRIVATE UNIT_TESTS)
+target_link_libraries(tcp_protocol_tests PRIVATE ${CRYPTO_LIBS})
+if(WIN32)
+  target_link_libraries(tcp_protocol_tests PRIVATE ws2_32 bcrypt)
+endif()
+
+add_test(NAME tcp_protocol_tests COMMAND tcp_protocol_tests)
+
+# ------------------------------------------------------------------------------
+# The N: TELNET protocol (lib/network-protocol/Telnet.cpp, on TCP.cpp) over the
+# fake socket in tcp_harness/.
+# ------------------------------------------------------------------------------
+add_executable(telnet_protocol_tests
+    TelnetProtocolTests.cpp
+    ${CMAKE_SOURCE_DIR}/lib/network-protocol/TCP.cpp
+    ${CMAKE_SOURCE_DIR}/lib/network-protocol/Telnet.cpp
+    ${CMAKE_SOURCE_DIR}/lib/network-protocol/Protocol.cpp
+    ${CMAKE_SOURCE_DIR}/lib/telnet/libtelnet.c
+    ${CMAKE_SOURCE_DIR}/lib/utils/peoples_url_parser.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/string_utils.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/utils.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/U8Char.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/punycode.cpp
+    ${CMAKE_SOURCE_DIR}/lib/compat/compat_inet.c
+    ${CMAKE_SOURCE_DIR}/lib/compat/compat_gettimeofday.c
+)
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+  target_sources(telnet_protocol_tests PRIVATE
+      ${CMAKE_SOURCE_DIR}/lib/compat/strlcpy.c
+      ${CMAKE_SOURCE_DIR}/lib/compat/strlcat.c
+  )
+endif()
+
+target_include_directories(telnet_protocol_tests BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests/tcp_harness/    # first: replaces fnTcpClient.h, fnTcpServer.h, bus.h
+    ${CMAKE_SOURCE_DIR}/lib/network-protocol/
+    ${CMAKE_SOURCE_DIR}/lib/telnet/
+    ${CMAKE_SOURCE_DIR}/lib/device/fujiDevice/
+    ${CMAKE_SOURCE_DIR}/lib/utils/
+    ${CMAKE_SOURCE_DIR}/lib/sam/
+    ${CMAKE_SOURCE_DIR}/lib/compat/
+    ${CMAKE_SOURCE_DIR}/include/
+    ${CMAKE_SOURCE_DIR}/components_pc/        # doctest
+    ${CMAKE_SOURCE_DIR}/components_pc/libsmb2/include/   # asprintf.h on Windows
+    ${MBEDTLS_INCLUDE_DIR}
+)
+target_compile_definitions(telnet_protocol_tests PRIVATE UNIT_TESTS)
+target_link_libraries(telnet_protocol_tests PRIVATE ${CRYPTO_LIBS})
+if(WIN32)
+  target_link_libraries(telnet_protocol_tests PRIVATE ws2_32 bcrypt)
+endif()
+
+add_test(NAME telnet_protocol_tests COMMAND telnet_protocol_tests)
+
+# ------------------------------------------------------------------------------
+# lib/stuffit: unsit is a host CLI over the library. The sample tests compare
+# it against unar and ndif2raw; they need -DSIT_SAMPLES_DIR / -DNDIF2RAW_DIR
+# (or the same environment variables) and are skipped otherwise.
+# ------------------------------------------------------------------------------
+add_executable(unsit
+    unsit.c
+    ${CMAKE_SOURCE_DIR}/lib/stuffit/stuffit.c
+    ${CMAKE_SOURCE_DIR}/lib/stuffit/sit_io.c
+    ${CMAKE_SOURCE_DIR}/lib/stuffit/sit_crc16.c
+    ${CMAKE_SOURCE_DIR}/lib/stuffit/sit_rle90.c
+    ${CMAKE_SOURCE_DIR}/lib/stuffit/sit_lzw.c
+    ${CMAKE_SOURCE_DIR}/lib/stuffit/sit_prefixcode.c
+    ${CMAKE_SOURCE_DIR}/lib/stuffit/sit_huffman.c
+    ${CMAKE_SOURCE_DIR}/lib/stuffit/sit_lzh13.c
+    ${CMAKE_SOURCE_DIR}/lib/stuffit/sit_bwt.c
+    ${CMAKE_SOURCE_DIR}/lib/stuffit/sit_arsenic.c
+    ${CMAKE_SOURCE_DIR}/lib/stuffit/binhex.c
+    ${CMAKE_SOURCE_DIR}/lib/stuffit/ndif.c
+)
+target_include_directories(unsit PRIVATE ${CMAKE_SOURCE_DIR}/lib/)
+
+find_program(UNAR_EXECUTABLE unar)
+if(NOT DEFINED SIT_SAMPLES_DIR)
+  set(SIT_SAMPLES_DIR "$ENV{SIT_SAMPLES_DIR}")
+endif()
+
+if(UNAR_EXECUTABLE AND SIT_SAMPLES_DIR AND EXISTS "${SIT_SAMPLES_DIR}")
+  add_test(NAME stuffit_sample_tests
+    COMMAND ${CMAKE_COMMAND} -E env
+      "UNSIT_BIN=$<TARGET_FILE:unsit>"
+      "UNAR_BIN=${UNAR_EXECUTABLE}"
+      "SIT_SAMPLES_DIR=${SIT_SAMPLES_DIR}"
+      bash ${CMAKE_CURRENT_SOURCE_DIR}/stuffit_test.sh
+  )
+  set_tests_properties(stuffit_sample_tests PROPERTIES DEPENDS unsit)
+else()
+  message(STATUS "unar or SIT_SAMPLES_DIR not found - skipping stuffit_sample_tests")
+endif()
+
+add_executable(ndif_blocks_test
+    ndif_blocks_test.c
+    ${CMAKE_SOURCE_DIR}/lib/stuffit/stuffit.c
+    ${CMAKE_SOURCE_DIR}/lib/stuffit/sit_io.c
+    ${CMAKE_SOURCE_DIR}/lib/stuffit/sit_crc16.c
+    ${CMAKE_SOURCE_DIR}/lib/stuffit/sit_rle90.c
+    ${CMAKE_SOURCE_DIR}/lib/stuffit/sit_lzw.c
+    ${CMAKE_SOURCE_DIR}/lib/stuffit/sit_prefixcode.c
+    ${CMAKE_SOURCE_DIR}/lib/stuffit/sit_huffman.c
+    ${CMAKE_SOURCE_DIR}/lib/stuffit/sit_lzh13.c
+    ${CMAKE_SOURCE_DIR}/lib/stuffit/sit_bwt.c
+    ${CMAKE_SOURCE_DIR}/lib/stuffit/sit_arsenic.c
+    ${CMAKE_SOURCE_DIR}/lib/stuffit/binhex.c
+    ${CMAKE_SOURCE_DIR}/lib/stuffit/ndif.c
+)
+target_include_directories(ndif_blocks_test PRIVATE ${CMAKE_SOURCE_DIR}/lib/)
+
+find_program(NDIF2RAW_MAKE make)
+if(NOT DEFINED NDIF2RAW_DIR)
+  set(NDIF2RAW_DIR "$ENV{NDIF2RAW_DIR}")
+endif()
+set(NOW_SOFTWARE_SIT "${SIT_SAMPLES_DIR}/Now_Software.sit")
+
+if(UNAR_EXECUTABLE AND NDIF2RAW_MAKE AND NDIF2RAW_DIR AND EXISTS "${NDIF2RAW_DIR}" AND EXISTS "${NOW_SOFTWARE_SIT}")
+  add_test(NAME ndif_sample_tests
+    COMMAND ${CMAKE_COMMAND} -E env
+      "UNSIT_BIN=$<TARGET_FILE:unsit>"
+      "NDIF_BLOCKS_TEST_BIN=$<TARGET_FILE:ndif_blocks_test>"
+      "UNAR_BIN=${UNAR_EXECUTABLE}"
+      "MAKE_BIN=${NDIF2RAW_MAKE}"
+      "NDIF2RAW_DIR=${NDIF2RAW_DIR}"
+      "NOW_SOFTWARE_SIT=${NOW_SOFTWARE_SIT}"
+      bash ${CMAKE_CURRENT_SOURCE_DIR}/ndif_test.sh
+  )
+  set_tests_properties(ndif_sample_tests PROPERTIES DEPENDS unsit)
+else()
+  message(STATUS "unar, make, NDIF2RAW_DIR or Now_Software.sit not found - skipping ndif_sample_tests")
+endif()
+
+# Real PC client and Mongoose over a bounded loopback TCP fixture.
+# The fixture uses select on subprocess pipes, available on POSIX hosts.
+if(UNIX)
+  add_executable(mg_http_completion_probe
+      MgHttpCompletionProbe.cpp
+      ${CMAKE_SOURCE_DIR}/lib/http/mgHttpClient.cpp
+      ${CMAKE_SOURCE_DIR}/components_pc/mongoose/mongoose.c
+  )
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    target_sources(mg_http_completion_probe PRIVATE
+        ${CMAKE_SOURCE_DIR}/lib/compat/strlcpy.c
+    )
+  endif()
+  target_include_directories(mg_http_completion_probe PRIVATE
+      ${CMAKE_SOURCE_DIR}/include/
+      ${CMAKE_SOURCE_DIR}/lib/http/
+      ${CMAKE_SOURCE_DIR}/lib/hardware/
+      ${CMAKE_SOURCE_DIR}/lib/utils/
+      ${CMAKE_SOURCE_DIR}/lib/compat/
+      ${CMAKE_SOURCE_DIR}/components_pc/mongoose/
+      ${MBEDTLS_INCLUDE_DIR}
+  )
+  target_compile_definitions(mg_http_completion_probe PRIVATE UNIT_TESTS)
+  target_link_libraries(mg_http_completion_probe PRIVATE ${CRYPTO_LIBS})
+  add_test(NAME mg_http_completion_tests COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/mg_http_completion_test.py
+      $<TARGET_FILE:mg_http_completion_probe>)
+  set_tests_properties(mg_http_completion_tests PROPERTIES TIMEOUT 25)
+endif()

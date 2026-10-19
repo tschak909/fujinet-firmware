@@ -10,7 +10,9 @@
 
 #ifdef BUILD_RS232
 # include "rs232/diskType.h"
+# include "rs232/diskTypeAltair.h"
 # include "rs232/diskTypeImg.h"
+# include "rs232/diskTypeIMD.h"
 # include "rs232/diskTypeROM.h"
 #endif
 
@@ -53,11 +55,6 @@
 #ifdef BUILD_RC2014
 # include "rc2014/mediaType.h"
 # include "rc2014/mediaTypeIMG.h"
-#endif
-
-#ifdef BUILD_H89
-# include "h89/mediaType.h"
-# include "h89/mediaTypeIMG.h"
 #endif
 
 #ifdef BUILD_COCO

@@ -138,9 +138,10 @@ fujiDevice::fujiDevice(unsigned int numDisk, std::string extension,
             fujicmd_set_host_prefix(packet.param(0));
         } },
         { CMD::FUJI_COPY_FILE, [this](const FUJI_COMMAND_PACKET &packet) {
-            uint8_t source = packet.param(0);
-            uint8_t dest = packet.param(1);
-            fujicmd_copy_file_success(source, dest, packet.dataAsString().value_or(""));
+            fujidev_copy_file(packet);
+        } },
+        { CMD::FUJI_NEW_DISK, [this](const FUJI_COMMAND_PACKET &packet) {
+            fujicmd_new_disk();
         } },
         { CMD::FUJI_GENERATE_GUID, [this](const FUJI_COMMAND_PACKET &packet) {
             fujicmd_generate_guid();
@@ -178,6 +179,11 @@ void fujiDevice::populate_slots_from_config()
 
     for (int i = 0; i < _totalDiskDevices; i++)
     {
+        // A mounted slot is already current; resetting it would drop the fileh
+        // that disk swap counts as mounted.
+        if (_fnDisks[i].fileh != nullptr)
+            continue;
+
         _fnDisks[i].reset();
 
         if (Config.get_mount_host_slot(i) != HOST_SLOT_INVALID)
@@ -338,7 +344,7 @@ int fujiDevice::get_rotate_slot()
 
 // Disk Image Rotate
 /*
-  We rotate disks my changing their disk device ID's. That prevents
+  We rotate disks by changing their disk device ID's. That prevents
   us from having to unmount and re-mount devices.
 */
 void fujiDevice::fujicmd_image_rotate()
@@ -419,7 +425,7 @@ SSIDConfig fujiDevice::fujicore_net_get_ssid()
 
     /*
       We memcpy instead of strcpy because technically the SSID and
-      phasephras aren't std::strings and aren't null terminated,
+      passphrase aren't std::strings and aren't null terminated,
       they're arrays of bytes officially and can contain any byte
       value - including a zero - at any point in the array.  However,
       we're not consistent about how we treat this in the different
@@ -675,15 +681,15 @@ void fujiDevice::insert_boot_device(uint8_t image_id, mediatype_t disk_type,
         {
             if (_lobbyDiskURL)
             {
-                auto parsed = PeoplesUrlParser::parseURL(*_lobbyDiskURL);
+                PeoplesUrlParser parsed(*_lobbyDiskURL);
                 Debug_printf("Starting TNFS connection\n");
-                if (!fnTNFS.start(parsed->host.c_str()))
+                if (!fnTNFS.start(parsed.host.c_str()))
                 {
                     Debug_printf("TNFS failed to start.\n");
                     fBoot = NULL;
                     return;
                 }
-                boot_img = parsed->path;
+                boot_img = parsed.path;
                 fBoot = fnTNFS.fnfile_open(boot_img.c_str());
             }
         }
@@ -823,8 +829,8 @@ void fujiDevice::fujicmd_close_directory()
  * Read directory entries in block mode
  *
  * Input parameters:
- * aux1: Number of 256-byte pages to return (determines maximum response size)
- * aux2: Lower 6 bits define the number of entries per page group
+ * num_pages: Number of 256-byte pages to return (determines maximum response size)
+ * group_size: Number of entries per page group
  *
  * Response format:
  * Overall response header:
@@ -833,7 +839,7 @@ void fujiDevice::fujicmd_close_directory()
  * Byte  2    : Header size (4)
  * Byte  3    : Number of page groups that follow
  *
- * Followed by one or more complete PageGroups, padded to aux1 * 256 bytes.
+ * Followed by one or more complete PageGroups, padded to num_pages * 256 bytes.
  * Each PageGroup must fit entirely within the response - partial groups are not allowed.
  * If a PageGroup would exceed the remaining space, the directory position is rewound
  * and that group is not included.
@@ -857,9 +863,8 @@ void fujiDevice::fujicmd_close_directory()
  *              - Byte  7  : Media type (0-255, with 0=unknown)
  *              - Bytes 8+ : Null-terminated filename
  *
- * The last PageGroup in the response will have its last_group flag set if:
- * a) There are no more directory entries to process, or
- * b) The next PageGroup would exceed the maximum response size
+ * The last PageGroup in the response has its last_group flag set only when
+ * there are no more directory entries to process.
  */
 void fujiDevice::fujicmd_read_directory_block(uint8_t num_pages, uint8_t group_size)
 {
@@ -912,7 +917,7 @@ void fujiDevice::fujicmd_read_directory_block(uint8_t num_pages, uint8_t group_s
             }
         }
 
-        // If this is the last group, mark its last entry as the last one
+        // If this is the last group, mark it as the last one
         if (is_last_entry) {
             Debug_println("This is the last group in the directory");
             group.is_last_group = true;
@@ -1037,7 +1042,7 @@ void fujiDevice::fujicmd_read_directory_entry(size_t maxlen, uint8_t addtl)
     }
 
     // Block mode (addtl $C0-$FF) is handled entirely by fujicmd_read_directory_block,
-    // which owns the SIO transaction. Must not transaction_accept here first.
+    // which owns the transaction. Must not transaction_accept here first.
     if ((addtl & 0xC0) == 0xC0)
     {
         fujicmd_read_directory_block(maxlen, addtl & 0x3F);
@@ -1143,6 +1148,7 @@ success_is_true fujiDevice::fujicore_copy_file_success(uint8_t sourceSlot, uint8
     if (dataBuf == nullptr)
     {
         fnio::fclose(sourceFile);
+        fnio::fclose(destFile);
         RETURN_ERROR_AS_FALSE();
     }
 
@@ -1153,11 +1159,85 @@ success_is_true fujiDevice::fujicore_copy_file_success(uint8_t sourceSlot, uint8
         fnio::fwrite(dataBuf, 1, count, destFile);
     } while (count > 0);
 
-    // copyEnd:
     fnio::fclose(sourceFile);
     fnio::fclose(destFile);
     free(dataBuf);
     RETURN_SUCCESS_AS_TRUE();
+}
+
+void fujiDevice::fujidev_copy_file(const FUJI_COMMAND_PACKET &packet)
+{
+    // Params must be read before data(); argument evaluation order is unspecified.
+    uint8_t source = packet.param(0);
+    uint8_t dest = packet.param(1);
+
+    fujicmd_copy_file_success(source, dest, packet.dataAsString().value_or(""));
+}
+
+success_is_true fujiDevice::fujicore_new_disk_success(const DISK_DEVICE::NewDiskRequest &req)
+{
+    if (validate_host_slot(req.hostSlot, "new disk").is_error()
+        || validate_device_slot(req.deviceSlot, "new disk").is_error())
+        RETURN_ERROR_AS_FALSE();
+
+    if (req.filename[0] == '\0')
+    {
+        Debug_print("fujicore_new_disk No filename\n");
+        RETURN_ERROR_AS_FALSE();
+    }
+
+    fujiDisk &disk = _fnDisks[req.deviceSlot];
+    fujiHost &host = _fnHosts[req.hostSlot];
+
+    disk.host_slot = req.hostSlot;
+    disk.access_mode = DISK_ACCESS_MODE_WRITE;
+    strlcpy(disk.filename, req.filename, sizeof(disk.filename));
+
+    if (host.file_exists(disk.filename))
+    {
+        Debug_printf("fujicore_new_disk File exists: \"%s\"\n", disk.filename);
+        RETURN_ERROR_AS_FALSE();
+    }
+
+    disk.fileh = host.fnfile_open(disk.filename, disk.filename, sizeof(disk.filename), FILE_WRITE);
+    if (disk.fileh == nullptr)
+    {
+        Debug_printf("fujicore_new_disk Couldn't open file for writing: \"%s\"\n", disk.filename);
+        RETURN_ERROR_AS_FALSE();
+    }
+
+    Debug_printf("Creating file %s on host slot %u for disk slot %u\n", disk.filename,
+                 req.hostSlot, req.deviceSlot);
+    auto written = get_disk_dev(req.deviceSlot)->write_blank(disk.fileh, req);
+    fnio::fclose(disk.fileh);
+
+    if (written.is_error())
+    {
+        Debug_print("fujicore_new_disk Data write failed\n");
+        RETURN_ERROR_AS_FALSE();
+    }
+
+    Debug_print("fujicore_new_disk succeeded\n");
+    RETURN_SUCCESS_AS_TRUE();
+}
+
+void fujiDevice::fujicmd_new_disk()
+{
+    DISK_DEVICE::NewDiskRequest req = {};
+
+    Debug_println("Fuji cmd: NEW DISK");
+    SYSTEM_BUS.transaction_accept(TRANS_STATE::WILL_GET);
+    if (SYSTEM_BUS.transaction_get(&req, sizeof(req)).is_error())
+    {
+        SYSTEM_BUS.transaction_error();
+        return;
+    }
+    req.filename[sizeof(req.filename) - 1] = '\0';
+
+    if (fujicore_new_disk_success(req).is_error())
+        SYSTEM_BUS.transaction_error();
+    else
+        SYSTEM_BUS.transaction_success();
 }
 
 success_is_true fujiDevice::fujicmd_copy_file_success(uint8_t sourceSlot, uint8_t destSlot,
@@ -1209,7 +1289,6 @@ success_is_true fujiDevice::fujicmd_unmount_disk_image_success(uint8_t deviceSlo
 void fujiDevice::fujicmd_get_adapter_config()
 {
     SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
-    // also return string versions of the data to save the host some computing
     Debug_printf("Fuji cmd: GET ADAPTER CONFIG\r\n");
 
     // AdapterConfigExtended contains AdapterConfig so just get Extended
@@ -1445,6 +1524,9 @@ void fujiDevice::fujicmd_write_host_slots()
 
     for (int i = 0; i < MAX_HOSTS; i++)
     {
+        // A new name releases the host's file system under any disk mounted from it.
+        if (strncasecmp(_fnHosts[i].get_hostname(), hostSlots[i], MAX_HOSTNAME_LEN) != 0)
+            unmount_disks_on_host(i);
         hostMounted[i] = false;
         _fnHosts[i].set_hostname(hostSlots[i]);
     }
@@ -1531,6 +1613,19 @@ void fujiDevice::fujicmd_set_host_prefix(uint8_t hostSlot, const char *prefix)
     SYSTEM_BUS.transaction_success();
 }
 
+void fujiDevice::unmount_disks_on_host(uint8_t hostSlot)
+{
+    for (int i = 0; i < _totalDiskDevices; i++)
+    {
+        if (_fnDisks[i].host_slot == hostSlot)
+        {
+            _fnDisks[i].disk_dev.unmount();
+            _fnDisks[i].disk_dev.device_active = false;
+            _fnDisks[i].reset();
+        }
+    }
+}
+
 // Unmount specified host
 success_is_true fujiDevice::fujicmd_unmount_host_success(uint8_t hostSlot)
 {
@@ -1544,16 +1639,7 @@ success_is_true fujiDevice::fujicmd_unmount_host_success(uint8_t hostSlot)
         RETURN_ERROR_AS_FALSE();
     }
 
-    // Unmount any disks associated with host slot
-    for (int i = 0; i < _totalDiskDevices; i++)
-    {
-        if (_fnDisks[i].host_slot == hostSlot)
-        {
-            _fnDisks[i].disk_dev.unmount();
-            _fnDisks[i].disk_dev.device_active = false;
-            _fnDisks[i].reset();
-        }
-    }
+    unmount_disks_on_host(hostSlot);
 
     // Unmount the host
     if (!_fnHosts[hostSlot].unmount_success())

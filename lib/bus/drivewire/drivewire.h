@@ -38,6 +38,7 @@
 #include <freertos/queue.h>
 #endif
 
+#include <atomic>
 #include <forward_list>
 #include <map>
 #include <cassert>
@@ -79,9 +80,7 @@ class drivewirePrinter;   // Printer device
 class drivewireDisk;      // See if you can guess what kind of device it is
 class fujiDevice;
 
-class NDevice;
-using drivewireNetwork = NDevice;
-//class drivewireNetwork;   // declare here so can reference it, but define in network.h
+class drivewireNetwork;
 
 class drivewireDevice
 {
@@ -162,6 +161,8 @@ private:
 
     void _drivewire_process_cmd();
     void _drivewire_process_queue();
+
+    std::atomic<bool> _diskSwapRequested{false};
 
 #ifdef ESP_PLATFORM
     void configureGPIO();
@@ -314,8 +315,10 @@ public:
             _port = &_becker;
     }
 
-    // For compatibility with fujiDevice.cpp
-    void rotateDevices(const std::vector<drivewireDisk *> &disks, int amount) {}
+    // Queues a swap; service() performs it between requests.
+    void rotateDevices(const std::vector<drivewireDisk *> &disks, int amount) {
+        _diskSwapRequested = true;
+    }
     fujiDeviceID_t fujiIDForDevice(drivewireDisk *device);
 };
 

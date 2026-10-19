@@ -197,143 +197,28 @@ void sioFuji::sio_set_baudrate(const FujiSIOPacket &packet)
 }
 
 // Do SIO copy
-void sioFuji::sio_copy_file(const FujiSIOPacket &packet)
+void sioFuji::fujidev_copy_file(const FUJI_COMMAND_PACKET &packet)
 {
-    uint8_t csBuf[256];
-    std::string copySpec;
-    std::string sourcePath;
-    std::string destPath;
-    uint8_t ck;
-    fnFile *sourceFile;
-    fnFile *destFile;
-    char *dataBuf;
-    unsigned char sourceSlot;
-    unsigned char destSlot;
-#ifndef ESP_PLATFORM
-    uint64_t poll_ts = fnSystem.millis();
-#endif
+    char copySpec[MAX_FILENAME_LEN] = {};
 
-    dataBuf = (char *)malloc(532);
-
-    if (dataBuf == nullptr)
+    SYSTEM_BUS.transaction_accept(TRANS_STATE::WILL_GET);
+    if (!SYSTEM_BUS.transaction_get(copySpec, sizeof(copySpec)))
     {
         SYSTEM_BUS.transaction_error();
         return;
     }
 
-    memset(&csBuf, 0, sizeof(csBuf));
-
-    SYSTEM_BUS.transaction_accept(TRANS_STATE::WILL_GET); // quick fix to permit copy to work again
-    if (!SYSTEM_BUS.transaction_get(csBuf, sizeof(csBuf)))
+    Debug_printf("copySpec: %s\n", copySpec);
+    if (copySpec[0] == '\0' || strchr(copySpec, '|') == nullptr)
     {
         SYSTEM_BUS.transaction_error();
-        free(dataBuf);
         return;
     }
 
-    copySpec = std::string((char *)csBuf);
-
-    Debug_printf("copySpec: %s\n", copySpec.c_str());
-
-    // Check for malformed copyspec.
-    if (copySpec.empty() || copySpec.find_first_of("|") == std::string::npos)
-    {
-        SYSTEM_BUS.transaction_error();
-        free(dataBuf);
-        return;
-    }
-
-    sourceSlot = packet.param(0);
-    destSlot = packet.param(1);
-
-    sourceSlot--, destSlot--;
-
-    if (!validate_host_slot(sourceSlot) || !validate_host_slot(destSlot))
-    {
-        SYSTEM_BUS.transaction_error();
-        free(dataBuf);
-        return;
-    }
-
-    // All good, after this point...
-
-    // Chop up copyspec.
-    sourcePath = copySpec.substr(0, copySpec.find_first_of("|"));
-    destPath = copySpec.substr(copySpec.find_first_of("|") + 1);
-
-    // At this point, if last part of dest path is / then copy filename from source.
-    if (destPath.back() == '/')
-    {
-        Debug_printf("append source file\n");
-        std::string sourceFilename = sourcePath.substr(sourcePath.find_last_of("/") + 1);
-        destPath += sourceFilename;
-    }
-
-    // Mount hosts, if needed.
-    _fnHosts[sourceSlot].mount();
-    _fnHosts[destSlot].mount();
-
-    // Open files...
-    sourceFile = _fnHosts[sourceSlot].fnfile_open(sourcePath.c_str(), (char *)sourcePath.c_str(), sourcePath.size() + 1, FILE_READ);
-
-    if (sourceFile == nullptr)
-    {
-        SYSTEM_BUS.transaction_error();
-        free(dataBuf);
-        return;
-    }
-
-    destFile = _fnHosts[destSlot].fnfile_open(destPath.c_str(), (char *)destPath.c_str(), destPath.size() + 1, FILE_WRITE);
-
-    if (destFile == nullptr)
-    {
-        SYSTEM_BUS.transaction_error();
-        fnio::fclose(sourceFile);
-        free(dataBuf);
-        return;
-    }
-
-    size_t readCount = 0;
-    size_t readTotal = 0;
-    size_t writeCount = 0;
-    size_t expected = _fnHosts[sourceSlot].file_size(sourceFile); // get the filesize
-    bool err = false;
-    do
-    {
-        readCount = fnio::fread(dataBuf, 1, 532, sourceFile);
-        readTotal += readCount;
-        // Check if we got enough bytes on the read
-        if (readCount < 532 && readTotal != expected)
-        {
-            err = true;
-            break;
-        }
-        writeCount = fnio::fwrite(dataBuf, 1, readCount, destFile);
-        // Check if we sent enough bytes on the write
-        if (writeCount != readCount)
-        {
-            err = true;
-            break;
-        }
-        Debug_printf("Copy File: %d bytes of %d\n", readTotal, expected);
-    } while (readTotal < expected);
-
-    if (err == true)
-    {
-        // Remove the destination file and error
-        _fnHosts[destSlot].file_remove((char *)destPath.c_str());
-        SYSTEM_BUS.transaction_error();
-        Debug_printf("Copy File Error! wCount: %d, rCount: %d, rTotal: %d, Expect: %d\n", writeCount, readCount, readTotal, expected);
-    }
-    else
-    {
+    if (fujicore_copy_file_success(packet.param(0), packet.param(1), copySpec).is_success())
         SYSTEM_BUS.transaction_success();
-    }
-
-    // copyEnd:
-    fnio::fclose(sourceFile);
-    fnio::fclose(destFile);
-    free(dataBuf);
+    else
+        SYSTEM_BUS.transaction_error();
 }
 
 size_t read_file_into_vector(FILE* fIn, std::vector<uint8_t>& response_data, size_t size) {
@@ -401,71 +286,6 @@ size_t sioFuji::set_additional_direntry_details(fsdir_entry_t *f, uint8_t *dest,
     custom_details.is_trunc = strlen(f->filename) >= maxlen ? DET_FF_TRUNC : 0;
     memcpy(dest, &custom_details, sizeof(custom_details));
     return sizeof(custom_details);
-}
-
-//  Make new disk and shove into device slot
-void sioFuji::sio_new_disk()
-{
-    SYSTEM_BUS.transaction_accept(TRANS_STATE::WILL_GET);
-    Debug_println("Fuji cmd: NEW DISK");
-
-    struct
-    {
-        unsigned short numSectors;
-        unsigned short sectorSize;
-        unsigned char hostSlot;
-        unsigned char deviceSlot;
-        char filename[MAX_FILENAME_LEN]; // WIll set this to MAX_FILENAME_LEN, later.
-    } newDisk;
-
-    // Ask for details on the new disk to create
-    if (!SYSTEM_BUS.transaction_get(&newDisk, sizeof(newDisk)))
-    {
-        Debug_print("sio_new_disk Bad checksum\n");
-        SYSTEM_BUS.transaction_error();
-        return;
-    }
-    if (newDisk.deviceSlot >= MAX_DISK_DEVICES || newDisk.hostSlot >= MAX_HOSTS)
-    {
-        Debug_print("sio_new_disk Bad disk or host slot parameter\n");
-        SYSTEM_BUS.transaction_error();
-        return;
-    }
-    // A couple of reference variables to make things much easier to read...
-    fujiDisk &disk = _fnDisks[newDisk.deviceSlot];
-    fujiHost &host = _fnHosts[newDisk.hostSlot];
-
-    disk.host_slot = newDisk.hostSlot;
-    disk.access_mode = DISK_ACCESS_MODE_WRITE;
-    strlcpy(disk.filename, newDisk.filename, sizeof(disk.filename));
-
-    if (host.file_exists(disk.filename))
-    {
-        Debug_printf("sio_new_disk File exists: \"%s\"\n", disk.filename);
-        SYSTEM_BUS.transaction_error();
-        return;
-    }
-
-    disk.fileh = host.fnfile_open(disk.filename, disk.filename, sizeof(disk.filename), FILE_WRITE);
-    if (disk.fileh == nullptr)
-    {
-        Debug_printf("sio_new_disk Couldn't open file for writing: \"%s\"\n", disk.filename);
-        SYSTEM_BUS.transaction_error();
-        return;
-    }
-
-    bool ok = disk.disk_dev.write_blank(disk.fileh, newDisk.sectorSize, newDisk.numSectors);
-    fnio::fclose(disk.fileh);
-
-    if (ok == false)
-    {
-        Debug_print("sio_new_disk Data write failed\n");
-        SYSTEM_BUS.transaction_error();
-        return;
-    }
-
-    Debug_print("sio_new_disk succeeded\n");
-    SYSTEM_BUS.transaction_success();
 }
 
 // AUX1 is our index value (from 0 to SIO_HISPEED_LOWEST_INDEX, for FN-PC 0 .. 10, 16)
@@ -700,12 +520,6 @@ void sioFuji::sio_process(const FujiSIOPacket &packet)
         break;
     case CMD::FUJI_SET_BAUDRATE:
         sio_set_baudrate(packet);
-        break;
-    case CMD::FUJI_NEW_DISK:
-        sio_new_disk();
-        break;
-    case CMD::FUJI_COPY_FILE:
-        sio_copy_file(packet);
         break;
     case CMD::FUJI_ENABLE_UDPSTREAM:
         sio_enable_netstream(packet);

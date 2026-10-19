@@ -7,6 +7,7 @@ project(fujinet-pc)
 # C++ standard
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
+add_compile_options(-Werror)
 
 
 if(FUJINET_TARGET STREQUAL "ATARI")
@@ -149,7 +150,7 @@ set(INCLUDE_DIRS include
     lib/network-protocol
     lib/fuji lib/bus lib/device lib/media
     lib/device/fujiDevice lib/device/fujiClock lib/device/NDevice
-    lib/encrypt lib/base64
+    lib/encrypt
     lib/devrelay/commands lib/devrelay/service lib/devrelay/slip lib/devrelay/types
     lib/encoding
     components_pc/mongoose
@@ -226,6 +227,8 @@ set(SOURCES src/main.cpp
     lib/ftp/fnFTP.h lib/ftp/fnFTP.cpp
     lib/TNFSlib/tnfslibMountInfo.h lib/TNFSlib/tnfslibMountInfo.cpp
     lib/TNFSlib/tnfslib.h lib/TNFSlib/tnfslib.cpp
+    lib/TNFSlib/tnfslib_internal.h lib/TNFSlib/tnfslib_dir.cpp
+    lib/TNFSlib/tnfslib_transport.cpp lib/TNFSlib/tnfslib_codes.cpp
     lib/TNFSlib/tnfslib_udp.h lib/TNFSlib/tnfslib_udp_testing.cpp
     lib/telnet/libtelnet.h lib/telnet/libtelnet.c
     lib/fnjson/fnjson.h lib/fnjson/fnjson.cpp
@@ -330,6 +333,8 @@ set(SOURCES src/main.cpp
     lib/device/siocpm.h
     lib/modem-sniffer/modem-sniffer.h lib/modem-sniffer/modem-sniffer.cpp
     lib/media/media.h
+    # Matches the ESP builds, which glob lib/media/*.cpp into every target
+    lib/media/IMDImage.h lib/media/IMDImage.cpp
     lib/encoding/base64.h lib/encoding/base64.cpp
     lib/encoding/hash.h lib/encoding/hash.cpp
     lib/qrcode/qrcode.h lib/qrcode/qrcode.c
@@ -349,9 +354,12 @@ if(FUJINET_TARGET STREQUAL "ATARI")
     lib/media/atari/diskTypeAtr.h lib/media/atari/diskTypeAtr.cpp
     lib/media/atari/diskTypeAtx.h lib/media/atari/diskTypeAtx.cpp
     lib/media/atari/diskTypeXex.h lib/media/atari/diskTypeXex.cpp
+    lib/media/atari/casTape.h
 
     lib/device/sio/disk.h lib/device/sio/disk.cpp
     lib/device/sio/printer.h lib/device/sio/printer.cpp
+    lib/device/sio/cassetteRewindRequest.h
+    lib/device/sio/cassetteTrail.h lib/device/sio/cassetteTrail.cpp
     lib/device/sio/printerlist.h lib/device/sio/printerlist.cpp
     lib/device/sio/cassette.h lib/device/sio/cassette.cpp
     lib/device/sio/sioFuji.h lib/device/sio/sioFuji.cpp
@@ -460,6 +468,7 @@ if(FUJINET_TARGET STREQUAL "COCO")
     lib/device/drivewire/printer.h lib/device/drivewire/printer.cpp
     lib/device/drivewire/printerlist.h lib/device/drivewire/printerlist.cpp
     lib/device/drivewire/drivewireClock.h lib/device/drivewire/drivewireClock.cpp
+    lib/device/drivewire/drivewireNetwork.h lib/device/drivewire/drivewireNetwork.cpp
 
     )
 endif()
@@ -505,7 +514,9 @@ if(FUJINET_TARGET STREQUAL "RS232")
     lib/hardware/BoIPChannel.h lib/hardware/BoIPChannel.cpp
 
     lib/media/rs232/diskType.h lib/media/rs232/diskType.cpp
+    lib/media/rs232/diskTypeAltair.h lib/media/rs232/diskTypeAltair.cpp
     lib/media/rs232/diskTypeImg.h lib/media/rs232/diskTypeImg.cpp
+    lib/media/rs232/diskTypeIMD.h lib/media/rs232/diskTypeIMD.cpp
     lib/media/rs232/diskTypeROM.h lib/media/rs232/diskTypeROM.cpp
 
     lib/device/rs232/rs232Clock.cpp lib/device/rs232/rs232Clock.h

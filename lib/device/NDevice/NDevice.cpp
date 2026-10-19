@@ -1,12 +1,6 @@
 /**
- * NetworkDeviceBase implementation.
- *
- * Compiled once per firmware target, same as every other .cpp in this tree --
- * add this file to whichever BUILD_xxx target you're building. It resolves
- * "network.h" the same way each xxx/network.cpp already resolves its own
- * "../network.h": via the include path for that target, which is expected to
- * put the relevant subdirectory first so NetworkPacket is defined before this
- * file needs it.
+ * NDevice: the N: network device shared by the SIO, RS-232, IWM, AdamNet,
+ * Lynx, IEC and DriveWire buses.
  */
 
 #include "NDevice.h"
@@ -25,6 +19,15 @@
 #define IS_DIR_MODE(access_mode)                                            \
     ({fileAccessMode_t _am = static_cast<fileAccessMode_t>(access_mode);    \
         _am == ACCESS_MODE::DIRECTORY || _am == ACCESS_MODE::DIRECTORY_ALT;})
+
+static void resize_spec(std::string &spec)
+{
+    // The computer ends the device spec with its native EOL, e.g. 0x9B for Atari, not NUL.
+    spec.resize(strlen(spec.c_str()));
+    auto eol = spec.find(SYSTEM_BUS.nativeEOL());
+    if (eol != std::string::npos)
+        spec.resize(eol);
+}
 
 const std::unordered_map<fujiCommandID_t, NDevice::Handler> NDevice::dispatch_table = {
     { CMD::NET_OPEN,            {&NDevice::fujidev_open}                  },
@@ -126,19 +129,6 @@ std::string NDevice::network_eol() const
     return network_eol_override.empty() ? SYSTEM_BUS.nativeEOL() : network_eol_override;
 }
 
-#ifdef HAVE_LAST_ERROR
-NDeviceStatus NDevice::status_local(uint8_t mode)
-{
-    NDeviceStatus status;
-
-    (void)mode;
-    status.conn = false;
-    status.err = lastError;
-    status.avail = 0;
-    return status;
-}
-#endif /* HAVE_LAST_ERROR */
-
 // ============================ shared operations =============================
 
 void NDevice::fujidev_open(const FUJI_COMMAND_PACKET &packet)
@@ -154,7 +144,7 @@ void NDevice::fujidev_open(const FUJI_COMMAND_PACKET &packet)
         SYSTEM_BUS.transaction_error();
         return;
     }
-    spec.resize(strlen(spec.c_str()));
+    resize_spec(spec);
     spec = SYSTEM_BUS.nativeTextToUnicode(spec);
 
     // Shut down protocol if we are sending another open before we close.
@@ -162,9 +152,13 @@ void NDevice::fujidev_open(const FUJI_COMMAND_PACKET &packet)
         _protocol->close();
     _protocol = nullptr;
     _parser = nullptr;
+    closeFailed = false;
 
-    if (!parse_and_instantiate_protocol(spec, IS_DIR_MODE(access), urlParser))
+    if (parse_and_instantiate_protocol(spec, IS_DIR_MODE(access), urlParser).is_error())
     {
+        _parser = std::make_unique<NErrorParser>(urlParser->isValidUrl()
+                                                 ? NDEV_STATUS::GENERAL
+                                                 : NDEV_STATUS::INVALID_DEVICESPEC);
         SYSTEM_BUS.transaction_error();
         return;
     }
@@ -183,13 +177,10 @@ void NDevice::fujidev_open(const FUJI_COMMAND_PACKET &packet)
 
     if (_protocol->open(urlParser.get(), access, trans_mode) != FUJI_ERROR::NONE)
     {
-#ifdef HAVE_LAST_ERROR
-        lastError = protocol->error;
-#endif /* HAVE_LAST_ERROR */
         Debug_printf("Protocol unable to make connection. Error: %d\n",
                      (unsigned) _protocol->error);
+        _parser = std::make_unique<NErrorParser>(_protocol->error);
         _protocol = nullptr;
-        _parser = nullptr;
         SYSTEM_BUS.transaction_error();
         return;
     }
@@ -205,17 +196,29 @@ void NDevice::fujidev_close(const FUJI_COMMAND_PACKET &packet)
 
     SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
 
-    if (_protocol != nullptr && _protocol->close() != FUJI_ERROR::NONE)
+    // SIO sends a command that got ERROR once more, and by then the channel is
+    // gone: keep failing until the next OPEN, with the reason for STATUS.
+    if (_protocol != nullptr)
+    {
+        closeFailed = _protocol->close() != FUJI_ERROR::NONE;
+        if (closeFailed)
+            _parser = std::make_unique<NErrorParser>(_protocol->error);
+    }
+    if (!closeFailed)
+        _parser = nullptr;
+    _protocol = nullptr;
+
+    if (closeFailed)
         SYSTEM_BUS.transaction_error();
     else
         SYSTEM_BUS.transaction_success();
-
-    _protocol = nullptr;
-    _parser = nullptr;
 }
 
 error_is_true NDevice::fujicore_read(ByteBuffer &buf, size_t len)
 {
+    if (_parser == nullptr)
+        RETURN_ERROR_AS_TRUE();
+
     fujiError_t err;
 
     std::string strbuf;
@@ -279,9 +282,6 @@ void NDevice::fujidev_write(const FUJI_COMMAND_PACKET &packet)
 
     if (_protocol == nullptr || transmitBuffer == nullptr)
     {
-#ifdef HAVE_LAST_ERROR
-        lastError = NDEV_STATUS::NOT_CONNECTED;
-#endif /* HAVE_LAST_ERROR */
         SYSTEM_BUS.transaction_error();
         return;
     }
@@ -297,6 +297,8 @@ void NDevice::fujidev_write(const FUJI_COMMAND_PACKET &packet)
 
 size_t NDevice::fujicore_available()
 {
+    if (_parser == nullptr)
+        return 0;
     return _parser->available();
 }
 
@@ -304,15 +306,11 @@ NDeviceStatus NDevice::current_status()
 {
     NDeviceStatus nstatus;
 
-    if (_protocol == nullptr)
+    if (_parser == nullptr)
     {
-#ifdef HAVE_LAST_ERROR
-        return status_local(mode);
-#else
         nstatus.avail = 0;
         nstatus.conn = 0;
         nstatus.err = NDEV_STATUS::NOT_CONNECTED;
-#endif /* HAVE_LAST_ERROR */
     }
     else
     {
@@ -338,9 +336,11 @@ NDeviceStatus NDevice::fujicore_status()
 
 void NDevice::fujidev_status(const FUJI_COMMAND_PACKET &packet)
 {
+    // Accept first: the first STATUS on HTTP runs the whole request, and SIO
+    // must ACK the command frame long before that is done.
+    SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
     auto nstatus = fujicore_status();
     readAck = GET_TIMESTAMP();
-    SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
     SYSTEM_BUS.transaction_send(&nstatus, sizeof(nstatus), false);
 }
 
@@ -439,7 +439,8 @@ error_is_true NDevice::fujicore_set_query(const std::string &query, uint8_t pars
     {
         if (!fn_query_param_is_valid(parseFlags))
             RETURN_ERROR_AS_TRUE();
-        _parser->setQueryParam(parseFlags);
+        if (_parser->setQueryParam(parseFlags).is_error())
+            RETURN_ERROR_AS_TRUE();
     }
 
     err = _parser->setQuery(query);
@@ -477,47 +478,43 @@ void NDevice::fujidev_set_query(const FUJI_COMMAND_PACKET &packet)
     SYSTEM_BUS.transaction_success();
 }
 
-bool NDevice::parse_and_instantiate_protocol(std::string &deviceSpec, bool is_dir,
-                                             std::unique_ptr<PeoplesUrlParser> &url_out)
+error_is_true NDevice::parse_and_instantiate_protocol(std::string &deviceSpec, bool is_dir,
+                                                      std::unique_ptr<PeoplesUrlParser> &url_out)
 {
     deviceSpec = util_devicespec_fix_for_parsing(deviceSpec, prefix, is_dir, true);
-    url_out = PeoplesUrlParser::parseURL(deviceSpec);
+    url_out = std::make_unique<PeoplesUrlParser>(deviceSpec);
 
     if (!url_out->isValidUrl())
     {
         Debug_printf("Invalid devicespec: >%s<\n", deviceSpec.c_str());
-#ifdef HAVE_LAST_ERROR
-        lastError = NDEV_STATUS::INVALID_DEVICESPEC;
-#endif /* HAVE_LAST_ERROR */
         _protocol = nullptr;
         _parser = nullptr;
-        return false;
+        RETURN_ERROR_AS_TRUE();
     }
 
 #ifdef VERBOSE_PROTOCOL
-    Debug_printf("::parse_and_instantiate_protocol -> spec: >%s<, url: >%s<\r\n", deviceSpec.c_str(), url_out->mRawUrl.c_str());
+    Debug_printf("::parse_and_instantiate_protocol -> spec: >%s<, url: >%s<\r\n", deviceSpec.c_str(), url_out->getFullURL().c_str());
 #endif
 
     _protocol = NetworkProtocolFactory::createProtocol(url_out->scheme, receiveBuffer, transmitBuffer, specialBuffer, &login, &password);
 
     if (_protocol == nullptr)
     {
-        Debug_printf("Could not open protocol. spec: >%s<, url: >%s<\n", deviceSpec.c_str(), url_out->mRawUrl.c_str());
-#ifdef HAVE_LAST_ERROR
-        lastError = NDEV_STATUS::GENERAL;
-#endif /* HAVE_LAST_ERROR */
-        return false;
+        Debug_printf("Could not open protocol. spec: >%s<, url: >%s<\n", deviceSpec.c_str(), url_out->getFullURL().c_str());
+        // The old parser, if any, pointed at the protocol just replaced.
+        _parser = nullptr;
+        RETURN_ERROR_AS_TRUE();
     }
 
     _protocol->native_eol = network_eol();
 
     Debug_printf("NDevice::parse_and_instantiate_protocol() - Protocol %s created.\n", url_out->scheme.c_str());
-    return true;
+    RETURN_SUCCESS_AS_FALSE();
 }
 
 void NDevice::fujidev_set_login(const FUJI_COMMAND_PACKET &packet)
 {
-    login.resize(256, 0);
+    login.assign(256, 0);
     SYSTEM_BUS.transaction_accept(TRANS_STATE::WILL_GET);
     SYSTEM_BUS.transaction_get(login);
     login.resize(strlen(login.c_str()));
@@ -526,7 +523,7 @@ void NDevice::fujidev_set_login(const FUJI_COMMAND_PACKET &packet)
 
 void NDevice::fujidev_set_password(const FUJI_COMMAND_PACKET &packet)
 {
-    password.resize(256);
+    password.assign(256, 0);
     SYSTEM_BUS.transaction_accept(TRANS_STATE::WILL_GET);
     SYSTEM_BUS.transaction_get(password);
     password.resize(strlen(password.c_str()));
@@ -538,6 +535,14 @@ void NDevice::fujidev_set_parser(const FUJI_COMMAND_PACKET &packet)
     SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
 
     parserMode_t mode = param_cast<parserMode_t>(packet, 1);
+    if (fujicore_set_parser(mode).is_error())
+        SYSTEM_BUS.transaction_error();
+    else
+        SYSTEM_BUS.transaction_success();
+}
+
+error_is_true NDevice::fujicore_set_parser(parserMode_t mode)
+{
     switch (mode)
     {
     case PARSER::NONE:
@@ -558,11 +563,10 @@ void NDevice::fujidev_set_parser(const FUJI_COMMAND_PACKET &packet)
 
     default:
         Debug_printf("INVALID MODE = %02x\r\n", (unsigned) mode);
-        SYSTEM_BUS.transaction_error();
-        return;
+        RETURN_ERROR_AS_TRUE();
     }
 
-    SYSTEM_BUS.transaction_success();
+    RETURN_SUCCESS_AS_FALSE();
 }
 
 void NDevice::fujidev_do_parse(const FUJI_COMMAND_PACKET &packet)
@@ -636,7 +640,11 @@ void NDevice::fujidev_set_parameter(const FUJI_COMMAND_PACKET &packet)
             SYSTEM_BUS.transaction_error();
             return;
         }
-        _parser->setQueryParam(qp);
+        if (_parser->setQueryParam(qp).is_error())
+        {
+            SYSTEM_BUS.transaction_error();
+            return;
+        }
         SYSTEM_BUS.transaction_success();
         break;
     }
@@ -678,9 +686,6 @@ void NDevice::fujidev_seek(const FUJI_COMMAND_PACKET &packet)
     SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
     if (fujicore_seek(param_as<uint32_t>(packet, 0)).is_error())
     {
-#ifdef HAVE_LAST_ERROR
-        lastError = NDEV_STATUS::INVALID_POINT;
-#endif /* HAVE_LAST_ERROR */
         SYSTEM_BUS.transaction_error();
         return;
     }
@@ -710,10 +715,10 @@ void NDevice::fs_op(const FUJI_COMMAND_PACKET &packet, fujiError_t (NetworkProto
     std::string spec(256, 0);
     SYSTEM_BUS.transaction_accept(TRANS_STATE::WILL_GET);
     SYSTEM_BUS.transaction_get(spec);
-    spec.resize(strlen(spec.c_str()));
+    resize_spec(spec);
 
     std::unique_ptr<PeoplesUrlParser> url;
-    if (!parse_and_instantiate_protocol(spec, IS_DIR_MODE(mode), url))
+    if (parse_and_instantiate_protocol(spec, IS_DIR_MODE(mode), url).is_error())
     {
         SYSTEM_BUS.transaction_error();
         return;
@@ -819,7 +824,6 @@ void NDevice::fujidev_http_set_channel_mode(const FUJI_COMMAND_PACKET &packet)
 
 void NDevice::fujidev_udp_get_remote(const FUJI_COMMAND_PACKET &packet)
 {
-#ifndef ESP_PLATFORM
     NetworkProtocolUDP *udp = dynamic_cast<NetworkProtocolUDP *>(_protocol.get());
     if (!udp)
     {
@@ -830,9 +834,6 @@ void NDevice::fujidev_udp_get_remote(const FUJI_COMMAND_PACKET &packet)
     SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
     fujiError_t err = udp->get_remote(receiveBuffer->data(), SPECIAL_BUFFER_SIZE);
     SYSTEM_BUS.transaction_send((uint8_t *)receiveBuffer->data(), SPECIAL_BUFFER_SIZE, err != FUJI_ERROR::NONE);
-#else
-    SYSTEM_BUS.transaction_error();
-#endif
 }
 
 void NDevice::fujidev_udp_set_destination(const FUJI_COMMAND_PACKET &packet)
@@ -853,8 +854,8 @@ void NDevice::fujidev_udp_set_destination(const FUJI_COMMAND_PACKET &packet)
 }
 
 /**
- * Check to see if PROCEED needs to be asserted, and assert if needed
- * (continue toggling PROCEED).
+ * True when the bus should assert PROCEED; alternates every 2 * timerRate ms
+ * so PROCEED keeps toggling.
  */
 bool NDevice::poll_interrupt()
 {
@@ -870,17 +871,12 @@ bool NDevice::poll_interrupt()
     bool hasUpdate = _parser->available() > 0;
     if (!hasUpdate)
     {
-        nDevStatus_t err;
-#ifdef HAVE_LAST_ERROR
-        err = lastError;
-#else
         _protocol->fromInterrupt = true;
         auto nstatus = fujicore_status();
         _protocol->fromInterrupt = false;
         if (!nstatus.conn)
             hasUpdate = true;
-        err = nstatus.err;
-#endif /* HAVE_LAST_ERROR */
+        nDevStatus_t err = nstatus.err;
 
         hasUpdate |= err != NDEV_STATUS::SUCCESS && err != NDEV_STATUS::END_OF_FILE;
     }

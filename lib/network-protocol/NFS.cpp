@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
+#include <cerrno>
 #include <cstring>
 
 #include "../../include/debug.h"
@@ -54,7 +55,7 @@ fujiError_t NetworkProtocolNFS::open_file_handle()
         flags = O_RDONLY;
         break;
     case ACCESS_MODE::WRITE:
-        flags = O_WRONLY | O_CREAT;
+        flags = O_WRONLY | O_CREAT | O_TRUNC;
         break;
     case ACCESS_MODE::APPEND:
         flags = O_APPEND | O_CREAT;
@@ -66,7 +67,7 @@ fujiError_t NetworkProtocolNFS::open_file_handle()
         Debug_printf("NetworkProtocolNFS::open_file_handle() - Uncaught aux1 %d", (int) streamMode);
     }
 
-    if (nfs_open(nfs, export_relative(opened_url->path).c_str(), flags, &fh) != 0)
+    if ((nfs_error = nfs_open(nfs, export_relative(opened_path).c_str(), flags, &fh)) != 0)
     {
         Debug_printf("NetworkProtocolNFS::open_file_handle() - NFS Error %s\r\n", nfs_get_error(nfs));
         fserror_to_error();
@@ -82,7 +83,7 @@ fujiError_t NetworkProtocolNFS::open_file_handle()
 
 fujiError_t NetworkProtocolNFS::open_dir_handle()
 {
-    if (nfs_opendir(nfs, export_relative(dir).c_str(), &nfs_dir) != 0)
+    if ((nfs_error = nfs_opendir(nfs, export_relative(dir).c_str(), &nfs_dir)) != 0)
     {
         Debug_printf("NetworkProtocolNFS::open_dir_handle() - ERROR: %s\r\n", nfs_get_error(nfs));
         fserror_to_error();
@@ -169,7 +170,7 @@ fujiError_t NetworkProtocolNFS::mount_path(const std::string &host, const std::s
 
 fujiError_t NetworkProtocolNFS::mount(PeoplesUrlParser *url)
 {
-    return mount_path(url->host, url->port, url->path);
+    return mount_path(url->host, url->port, file_path(url));
 }
 
 fujiError_t NetworkProtocolNFS::umount()
@@ -183,8 +184,23 @@ fujiError_t NetworkProtocolNFS::umount()
 
 void NetworkProtocolNFS::fserror_to_error()
 {
+    // libnfs returns -errno.
     switch (nfs_error)
     {
+    case -ENOENT:
+        error = NDEV_STATUS::FILE_NOT_FOUND;
+        break;
+    case -EEXIST:
+        error = NDEV_STATUS::FILE_EXISTS;
+        break;
+    case -EACCES:
+    case -EPERM:
+    case -EROFS:
+        error = NDEV_STATUS::ACCESS_DENIED;
+        break;
+    case -ENOSPC:
+        error = NDEV_STATUS::NO_SPACE_ON_DEVICE;
+        break;
     default:
         error = NDEV_STATUS::GENERAL;
         break;
@@ -197,6 +213,7 @@ fujiError_t NetworkProtocolNFS::read_file_handle(uint8_t *buf, unsigned short le
 
     if ((actual_len = nfs_pread(nfs, fh, buf, len, offset)) != len)
     {
+        nfs_error = actual_len < 0 ? actual_len : 0;
         fserror_to_error();
         return FUJI_ERROR::UNSPECIFIED;
     }
@@ -244,6 +261,7 @@ fujiError_t NetworkProtocolNFS::write_file_handle(uint8_t *buf, unsigned short l
 
     if ((actual_len = nfs_pwrite(nfs, fh, buf, len, offset)) != len)
     {
+        nfs_error = actual_len < 0 ? actual_len : 0;
         fserror_to_error();
         return FUJI_ERROR::UNSPECIFIED;
     }
@@ -255,24 +273,50 @@ fujiError_t NetworkProtocolNFS::write_file_handle(uint8_t *buf, unsigned short l
 
 fujiError_t NetworkProtocolNFS::rename(PeoplesUrlParser *url)
 {
-    return FUJI_ERROR::NONE;
+    if (NetworkProtocolFS::rename(url) != FUJI_ERROR::NONE)
+        return FUJI_ERROR::UNSPECIFIED;
+
+    // Both names share a directory, so mounting it for one covers the other.
+    if (mount_path(url->host, url->port, filename) != FUJI_ERROR::NONE)
+        return FUJI_ERROR::UNSPECIFIED;
+
+    if ((nfs_error = nfs_rename(nfs, export_relative(filename).c_str(), export_relative(destFilename).c_str())) != 0)
+    {
+        fserror_to_error();
+        Debug_printf("NetworkProtocolNFS::rename(%s) NFS error: %s\r\n", url->url.c_str(), nfs_get_error(nfs));
+    }
+
+    umount();
+
+    return nfs_error != 0 ? FUJI_ERROR::UNSPECIFIED : FUJI_ERROR::NONE;
 }
 
 fujiError_t NetworkProtocolNFS::del(PeoplesUrlParser *url)
 {
-    return FUJI_ERROR::NONE;
+    if (mount_path(url->host, url->port, file_path(url)) != FUJI_ERROR::NONE)
+        return FUJI_ERROR::UNSPECIFIED;
+
+    if ((nfs_error = nfs_unlink(nfs, export_relative(file_path(url)).c_str())) != 0)
+    {
+        fserror_to_error();
+        Debug_printf("NetworkProtocolNFS::del(%s) NFS error: %s\r\n", url->url.c_str(), nfs_get_error(nfs));
+    }
+
+    umount();
+
+    return nfs_error != 0 ? FUJI_ERROR::UNSPECIFIED : FUJI_ERROR::NONE;
 }
 
 fujiError_t NetworkProtocolNFS::mkdir(PeoplesUrlParser *url)
 {
     // Strip trailing slash so the last component is the directory to create.
-    std::string path = url->path;
+    std::string path = file_path(url);
     while (path.size() > 1 && path.back() == '/')
         path.pop_back();
 
     mount_path(url->host, url->port, path);
 
-    if (nfs_mkdir(nfs, export_relative(path).c_str()) != 0)
+    if ((nfs_error = nfs_mkdir(nfs, export_relative(path).c_str())) != 0)
     {
         fserror_to_error();
         Debug_printf("NetworkProtocolNFS::mkdir(%s) NFS error: %s\r\n",url->url.c_str(), nfs_get_error(nfs));
@@ -280,19 +324,19 @@ fujiError_t NetworkProtocolNFS::mkdir(PeoplesUrlParser *url)
 
     umount();
 
-    return FUJI_ERROR::NONE;
+    return nfs_error != 0 ? FUJI_ERROR::UNSPECIFIED : FUJI_ERROR::NONE;
 }
 
 fujiError_t NetworkProtocolNFS::rmdir(PeoplesUrlParser *url)
 {
     // Strip trailing slash so the last component is the directory to remove.
-    std::string path = url->path;
+    std::string path = file_path(url);
     while (path.size() > 1 && path.back() == '/')
         path.pop_back();
 
     mount_path(url->host, url->port, path);
 
-    if (nfs_rmdir(nfs, export_relative(path).c_str()) != 0)
+    if ((nfs_error = nfs_rmdir(nfs, export_relative(path).c_str())) != 0)
     {
         fserror_to_error();
         Debug_printf("NetworkProtocolNFS::rmdir(%s) NFS error: %s\r\n",url->url.c_str(), nfs_get_error(nfs));
@@ -300,14 +344,14 @@ fujiError_t NetworkProtocolNFS::rmdir(PeoplesUrlParser *url)
 
     umount();
 
-    return FUJI_ERROR::NONE;
+    return nfs_error != 0 ? FUJI_ERROR::UNSPECIFIED : FUJI_ERROR::NONE;
 }
 
 fujiError_t NetworkProtocolNFS::stat()
 {
     struct nfs_stat_64 st;
 
-    int ret = nfs_stat64(nfs, export_relative(opened_url->path).c_str(), &st);
+    int ret = nfs_stat64(nfs, export_relative(opened_path).c_str(), &st);
 
     fileSize = st.nfs_size;
     return ret != 0 ? FUJI_ERROR::UNSPECIFIED : FUJI_ERROR::NONE;

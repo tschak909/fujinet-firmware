@@ -26,8 +26,7 @@ several `*-bringup` branches), so the area you are about to change may already b
 ## Build the firmware (ESP32)
 
 There are two entry points: the `Makefile` for the common cases and `./build.sh` for the full flag
-set. The `Makefile` wraps `build.sh` and strips ANSI colour codes from the output, so prefer it when
-you need to read a build log.
+set. The `Makefile` wraps `build.sh`.
 
 ```sh
 make build        # == ./build.sh -b
@@ -37,6 +36,7 @@ make zip          # == ./build.sh -z
 make clean        # == ./build.sh -c
 make all          # == ./build.sh -a    (every board)
 make pico-de-coco # builds pico/coco separately
+make build YES=1  # any target: pass -y, install missing prerequisites without asking
 ```
 
 Every `build.sh` run regenerates `platformio-generated.ini` by merging
@@ -63,7 +63,7 @@ Every `build.sh` run regenerates `platformio-generated.ini` by merging
 ## Build and test on the host (FujiNet-PC)
 
 ```sh
-make coco-lwm             # == ./build.sh -p COCO -g : host debug build, colour codes stripped
+make coco-lwm             # == ./build.sh -p COCO -g : host debug build
 ./build.sh -p ATARI       # configure, build, build dist/, then run ctest -V --progress
 ./build.sh -p ATARI -g    # same, debug build
 (cd build/dist && ./run-fujinet)
@@ -79,12 +79,13 @@ automatic clean. Needs `cmake`, a C++20 compiler, MbedTLS 3.x, and `python_modul
 
 ## Validate a change before proposing it
 
-CI for the firmware is **build-only**: `autobuild.yml` compiles 10 ESP32 targets and runs no tests,
-and the ctest suite runs in `build-fujinet-pc.yml` only because `build.sh -p` invokes it. No
+CI for the firmware is **build-only**: `autobuild.yml` compiles only the boards in its
+`target-platform` matrix (not every board `build.sh -S` lists) and runs no tests, and the ctest
+suite runs in `build-fujinet-pc.yml` only because `build.sh -p` invokes it. No
 workflow runs a linter or a formatter. So:
 
 1. `make atari-lwm` (or `./build.sh -p ATARI`) — compiles host code and runs every ctest,
-   including the policy check. Use the target matching the platform you changed.
+   including the two policy checks. Use the target matching the platform you changed.
 2. `./build.sh -b` for at least one board of each platform your change touches.
 3. `./build.sh -a` if you touched shared code under `lib/` or `src/main.cpp`.
 4. `git diff` and re-read the comments in it: each must still be true of the code as changed.
@@ -92,16 +93,18 @@ workflow runs a linter or a formatter. So:
 
 ## Tests
 
-- The live suite is `tests/`, doctest-based, wired in only for the PC build. ctest names:
-  `fujibuspacket_tests`, `calendar_tests`, `mail_tests`, `no_build_ifdefs_in_fujidevice`, and
-  `sio_dstats_tests` (built only when `FUJINET_TARGET=ATARI`).
+- The live suite is `tests/`, doctest-based, wired in only for the PC build. The ctest names are
+  the `add_test` entries in `tests/CMakeLists.txt`. Two are Python policy checks
+  (`no_build_ifdefs_in_fujidevice`, `no_system_bus_in_media`), two build only when
+  `FUJINET_TARGET=ATARI` (`sio_dstats_tests`, `nquery_output_mode_tests`), and the StuffIt and
+  NDIF sample tests register only when their sample corpus and tools are present.
 - Run them with `./build.sh -p ATARI`, or `ctest -V` from `build/` after a PC configure.
 - To add one, add an `add_executable` + `add_test` pair to `tests/CMakeLists.txt`; keep the unit
   under test free of hardware and FujiNet globals so it links alone, as `fn_time.cpp` does.
 - `test/` (singular) is the stale PlatformIO/Unity on-hardware directory; nothing references it.
   Do not extend it and do not add tests there.
 
-## Enforced architecture rule
+## Enforced architecture rules
 
 No `BUILD_*` identifier may appear in a `#if`, `#ifdef`, `#ifndef` or `#elif` anywhere under
 `lib/device/fujiDevice`, `lib/device/fujiClock`, or `lib/device/NDevice`. `tests/check_no_build_ifdefs.py`
@@ -109,21 +112,38 @@ enforces this as the `no_build_ifdefs_in_fujidevice` ctest; it strips comments a
 first, so you cannot dodge it. Customize by overriding a virtual in the per-bus subclass under
 `lib/device/<bus>/`, or by a mixin in `lib/device/fujiDevice/`.
 
-The codebase is actively unifying per-platform code into these shared bases: `fujiDevice` (plus its
-mixins) and `NDevice` replaced the per-bus Fuji and network devices. Extend the shared layer rather
-than copying an existing device implementation into a new platform directory.
+`SYSTEM_BUS` may not appear anywhere under `lib/media`; `tests/check_no_system_bus.py` enforces
+this as the `no_system_bus_in_media` ctest. A media class receives a file handle and knows nothing
+about the bus; the device that mounts it does the talking.
+
+The codebase is actively unifying per-platform code into shared bases: `fujiDevice` (plus its
+mixins) and `NDevice` replaced the per-bus Fuji and network devices, and `MediaType` with one
+subclass per image format is the same shape in `lib/media`. The ctests above cover only the
+directories they name; the rule they enforce applies to every layer (see Design principles), and a
+reviewer holds the rest of the tree to it by hand. Extend the shared layer rather than copying an
+existing implementation into a new platform, board or format directory.
 
 ## Design principles
 
 Reviewers hold changes to the direction below. A change that works but cuts against it will be sent
 back, so raise the design first when yours does not fit.
 
-- One implementation, many platforms. Behaviour common to two or more platforms belongs in the
-  shared base; platform difference is expressed by overriding a virtual in the per-bus subclass, not
-  by branching inside shared code. Duplicating a device into a new platform directory is the single
-  most common rejection.
+- One implementation, many variants, in every layer. Whatever the layer — bus, device, disk,
+  media, file system, network protocol, clock, printer, hardware — behavior common to two or more
+  variants belongs in a shared base, and a variant (a platform, a bus, a board on a bus, an image
+  format, a protocol) is a subclass that overrides a virtual. Never a branch inside shared code,
+  and never a copy. Duplicating an implementation into a new platform directory is the single most
+  common rejection; a `#ifdef` on a platform or board macro inside a function is the second.
+- This is object-oriented code, so the SOLID principles apply and reviewers name them. The two that
+  matter most here: single responsibility (one class, one concern — a mixin or strategy object for
+  a second one) and open/closed (a new board, format or protocol is a new subclass; existing code
+  is not edited to know about it).
+- A board that differs from the others on its bus has two sanctioned mechanisms: a capability the
+  pinmap declares and one piece of shared code honors (`FN_USB_EXPECTED_VID`, `PIN_LED_STRIP`), or
+  a per-board subclass of the bus's device, selected in the switchboards below. Not a `PINMAP_*`
+  test in the device.
 - Keep the layers apart: `lib/bus/<bus>/` owns wire protocol and timing, `lib/device/<bus>/` owns
-  device behaviour, `lib/media/<platform>/` owns image formats. Do not reach across them, and do not
+  device behavior, `lib/media/<platform>/` owns image formats. Do not reach across them, and do not
   put protocol details in a device or filesystem knowledge in a bus.
 - Go through the existing abstractions — `fnConfig`, `FileSystem`/`fnFS`, `IOChannel`, the
   `network-protocol` adapters, `include/pinmap/` — rather than calling ESP-IDF or touching GPIO
@@ -135,14 +155,21 @@ back, so raise the design first when yours does not fit.
 ## Platform conditional compilation
 
 - Platform macros are `BUILD_ADAM`, `BUILD_APPLE`, `BUILD_ATARI`, `BUILD_COCO`, `BUILD_CX16`,
-  `BUILD_H89`, `BUILD_IEC`, `BUILD_LYNX`, `BUILD_MAC`, `BUILD_RC2014`, `BUILD_RS232`, `BUILD_S100`
+  `BUILD_IEC`, `BUILD_LYNX`, `BUILD_MAC`, `BUILD_RC2014`, `BUILD_RS232`, `BUILD_S100`
   (plus `NEW_TARGET`, the skeleton port). Exactly one is defined per build. They come from
   `build_platform` in `build-platforms/platformio-<board>.ini`, or from `fujinet_pc.cmake`.
 - Firmware vs host is `#ifdef ESP_PLATFORM` / `#ifndef ESP_PLATFORM`. There is **no** `FUJINET_PC`
   macro; `FUJINET_TARGET` is a CMake variable, not a preprocessor symbol. Board/hardware variants
   are a separate `PINMAP_*` family, one per header in `include/pinmap/`.
 - `lib/bus/bus.h`, `lib/device/device.h` and `lib/device/disk.h` are the `#ifdef BUILD_*`
-  switchboards that select the bus, the device set and the `DISK_DEVICE` alias.
+  switchboards that select the bus, the device set and the `DISK_DEVICE` alias (`printer.h`,
+  `modem.h`, `cassette.h`, `netstream.h`, `siocpm.h` and `lib/media/media.h` do the same for their
+  classes), and `src/main.cpp` assembles the platform's devices.
+- Those switchboards, `include/pinmap/` and a whole-file guard (`#ifdef BUILD_X` as the first line
+  of a file that exists only for that platform) are the only places a `BUILD_*` or `PINMAP_*` macro
+  belongs in a preprocessor conditional. Anywhere else under `lib/`, a `#if` on a platform or
+  board macro is a defect: it means a variant was branched in instead of subclassed. Do not add
+  one, and remove the ones you touch.
 
 ## Never hand-edit or commit these
 
@@ -159,6 +186,13 @@ the ignore has no effect. PlatformIO/ESP-IDF rewrites `sdkconfig.<env>` on essen
 firmware build and it shows up dirty in `git status`. Never sweep an incidental `sdkconfig.*` diff
 into an unrelated commit; `git checkout --` it. A deliberate sdkconfig change (flash size, PSRAM
 mode, socket counts) is normal and correct to commit. Read `git diff --stat` before staging.
+
+## Keep the source tree clean
+
+A build must not leave temporary files in a source directory. Scratch files, logs and intermediate
+outputs go under the build's own output directory (`.pio/`, `build/`) or the system temp directory. This applies to a new build script or CMake/PlatformIO rule and to any change
+to an existing one. Before committing, check `git status` for untracked files and remove any your
+work left behind; never commit them or add them to `.gitignore` to hide them.
 
 ## Scripts that are broken or obsolete
 
@@ -180,17 +214,22 @@ tree does not conform.
   hard-disabled) and no workflow invokes it. `./coding-standard.py --addhook` installs it locally.
 - Use `std::string`, not Arduino `String`. Prefix new private members with `_`. Use fixed-width
   types and `__attribute__((packed))` structs for wire formats, never `std::string`.
+- Keep each acronym in one case in new names, file names, comments and docs: all lower if it
+  starts lower (`tnfs_open()`, `httpClient`), all upper if it starts upper (`TNFS`,
+  `fnHTTPClient`), never mixed (`Tnfs`, `Http`). Existing names like `fnHttpService` and
+  `PeoplesUrlParser` change only in a rename PR.
 
 ## C++ and code structure
 
 Full rules, with the worked `fujiDevice` example, are in **`docs/cpp-style.md`**. Read it
 before writing device-side code or anything non-trivial. The rules broken most often:
 
-- **Never return a bare `bool` for success or failure.** Return `success_is_true` or `error_is_true`
-  from `include/global_types.h`, whichever the file already uses, via `RETURN_SUCCESS_AS_TRUE()`,
+- **Never use a bare `bool` for success or failure**, whether returned, stored in a member or local,
+  or passed as an argument. Use `success_is_true` or `error_is_true` from `include/global_types.h`,
+  whichever the file already uses; return them via `RETURN_SUCCESS_AS_TRUE()`,
   `RETURN_ERROR_IF(expr)` and friends. Test the result only with `.is_success()` or `.is_error()` —
   never against `true`/`false`/`0`/`1` and never by truthiness, since the two types carry opposite
-  polarity.
+  polarity. A flag a callback sets for its caller to read is the common way this slips in.
 - **Compare `fujiError_t` against `FUJI_ERROR::NONE`, never `FUJI_ERROR::UNSPECIFIED`.** Use
   `if (err != FUJI_ERROR::NONE)` for failure and `== FUJI_ERROR::NONE` for success. `UNSPECIFIED` is
   a placeholder that is expected to be replaced by a real list of error codes, so any test written
@@ -201,7 +240,7 @@ before writing device-side code or anything non-trivial. The rules broken most o
   read or write. No bit shifts over `uint8_t` arrays, no `htole*()`/`htobe*()`.
 - **One capability per class; dispatch through a table, not a switch.** `Base64Mixin`, `HashMixin`,
   `QRMixin` and `AppKeyMixin` each own one feature and register their own commands. A new feature is
-  a new mixin; a new command is one table entry plus one short handler. Vary behaviour by overriding
+  a new mixin; a new command is one table entry plus one short handler. Vary behavior by overriding
   a virtual, never by branching in shared code.
 - **Own every resource and check every allocation**, including on error and teardown paths. Prefer
   `std::unique_ptr` or a container to a bare `new`/`delete` pair. Heap leaks on error paths are a
@@ -227,7 +266,7 @@ block comment is almost always wrong here.
 Before every commit, re-read each comment that appears in `git diff` — including ones you did not
 write but whose code you changed. For each, confirm it is still **accurate** for the code as it now
 stands, then that it is still brief and still says something the code does not. Fix or delete any
-comment the change has falsified or made redundant. A comment that describes the old behaviour is
+comment the change has falsified or made redundant. A comment that describes the old behavior is
 worse than no comment, and this is the easiest defect to leave behind.
 
 ## Logging
@@ -260,7 +299,7 @@ walks the whole heap and is a temporary diagnostic only.
 
 One concern per pull request. Large mixed diffs are the most common reason a change is sent back.
 
-- Do not combine a refactor with a behaviour change, a bug fix with a feature, or a rename with
+- Do not combine a refactor with a behavior change, a bug fix with a feature, or a rename with
   either. Land the refactor first, then the change that needed it.
 - Keep formatting, whitespace and comment edits out of a functional diff entirely.
 - A change that touches a shared base and then rolls the result out to several platforms is at least
@@ -332,12 +371,13 @@ Write the short version instead, and leave a section out rather than filling it 
 - **Editing generated files** such as `platformio-generated.ini` or `data/BUILD_*/www/`. The web UI
   is authored in `data/webui/{template,common,config}/` plus `lib/http/httpServiceParser.cpp`.
 - **Committing sdkconfig churn** produced by a local build.
+- **A build that leaves temporary files** in a source directory, or committing them.
 - **Bulk reformatting** a file because it does not match `.clang-format`.
 - **Over-commenting.** Long explanatory block comments and edit narration inflate the diff and go
   stale; see Comments above.
 - **One big diff.** Bundling a refactor, a fix and a rollout together; see Scope of a change.
-- **Returning a bare `bool`** for success/failure, or testing a result with `if (result)` or
-  `== true` instead of `.is_success()`/`.is_error()`.
+- **A bare `bool`** for success/failure — returned, kept in a member, or set by a callback — or
+  testing a result with `if (result)` or `== true` instead of `.is_success()`/`.is_error()`.
 - **Testing a `fujiError_t` against `FUJI_ERROR::UNSPECIFIED`** instead of `FUJI_ERROR::NONE`.
 - **Hand-rolling endian conversion** with shifts or `htole*()` instead of the `u*le_t`/`u*be_t` types.
 - **Leaving a comment that the change made untrue.**
@@ -360,8 +400,33 @@ built and which you did not, whether you flashed and ran it on hardware and on w
 whether any test covers the change. "Builds for ATARI and COCO, not flashed, no test coverage" is a
 perfectly good answer and far more useful than silence.
 
+## Directory READMEs
+
+Every source directory carries a `README.md` describing what it is for, what each file defines and
+how it fits with its neighbours; `lib/README.md` is the architecture overview and the place to
+start. Keep them in the same terse register as the code comments.
+
+- Fixed shape: a title line that is the repo-relative path (`# lib/bus/sio`), one sentence of
+  purpose, `## Layout` as a file-to-definition table, `## How it fits` (who uses it, what it uses),
+  `## Build` (how it reaches the ESP and PC builds), and `## Notes` only when there is something to
+  say. Omit a section rather than pad it.
+- Links are relative. Point at a directory with a trailing slash (`[lib/fuji/](../fuji/)`), not at
+  its `README.md`, and at a file only when the sentence names that file. A backticked path resolves
+  from the README's own directory or from the repo root; a bare basename from elsewhere is wrong.
+- State status, not history: "legacy, fails to build (#1658)", "not compiled on PC", "generated
+  by `build_pico.py`". No line numbers, counts, dates, change logs or bug lists; a defect gets a
+  GitHub issue, as above.
+- For vendored code give the upstream, the version if known, the license, whether it is modified
+  locally and what consumes it. Do not add a README inside a vendored upstream tree, a submodule,
+  or a directory that ships verbatim into a build artifact (`distfiles/`, the `data/webui` content
+  trees).
+- A new directory gets a README in the same PR. A change that adds, moves or deletes files updates
+  the Layout table it touches; re-read it before committing, exactly as you re-read comments.
+
 ## Where to look
 
+- Each directory's `README.md`; `lib/README.md` has the layer diagram and how one `BUILD_*`
+  selects the bus, device set and media.
 - `src/` holds only `main.cpp` (per-platform device assembly); nearly all code is in `lib/`.
 - `lib/bus/<bus>/` protocol and `systemBus`; `lib/device/<bus>/` that bus's devices;
   `lib/media/<platform>/` disk-image formats; `lib/device/fujiDevice`, `NDevice`, `fujiClock` the

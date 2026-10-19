@@ -35,6 +35,16 @@
 #include "pinmap/fujiversal-rs232.h"
 #include "pinmap/fujiversal-intv.h"
 #include "pinmap/fujiversal-o2.h"
+#include "pinmap/fujiversal-astrocade.h"
+#include "pinmap/fujiversal-msx.h"
+#include "pinmap/fujiversal-channelf.h"
+#include "pinmap/fujiversal-arcadia.h"
+#include "pinmap/fujiversal-nes.h"
+#include "pinmap/fujiversal-sms.h"
+#include "pinmap/fujiversal-atari7800.h"
+#include "pinmap/fujiversal-atari5200.h"
+#include "pinmap/fujiversal-studio2.h"
+#include "pinmap/fujiversal-s100.h"
 
 
 #include "pinmap_defaults.h"

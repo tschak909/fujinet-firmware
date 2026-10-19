@@ -9,7 +9,6 @@ set(INCLUDES
     ${CMAKE_SOURCE_DIR}/lib/bus/comlynx
     ${CMAKE_SOURCE_DIR}/lib/bus/cx16_i2c
     ${CMAKE_SOURCE_DIR}/lib/bus/drivewire
-    ${CMAKE_SOURCE_DIR}/lib/bus/h89
     ${CMAKE_SOURCE_DIR}/lib/bus/iec
     ${CMAKE_SOURCE_DIR}/lib/bus/iwm
     ${CMAKE_SOURCE_DIR}/lib/bus/mac
@@ -35,7 +34,6 @@ set(INCLUDES
     ${CMAKE_SOURCE_DIR}/lib/device/comlynx
     ${CMAKE_SOURCE_DIR}/lib/device/cx16_i2c
     ${CMAKE_SOURCE_DIR}/lib/device/drivewire
-    ${CMAKE_SOURCE_DIR}/lib/device/h89
     ${CMAKE_SOURCE_DIR}/lib/device/iec
     ${CMAKE_SOURCE_DIR}/lib/device/iwm
     ${CMAKE_SOURCE_DIR}/lib/device/mac
@@ -74,6 +72,7 @@ set(INCLUDES
     ${CMAKE_SOURCE_DIR}/lib/qrcode
     ${CMAKE_SOURCE_DIR}/lib/runcpm
     ${CMAKE_SOURCE_DIR}/lib/sam
+    ${CMAKE_SOURCE_DIR}/lib/stuffit
     ${CMAKE_SOURCE_DIR}/lib/task
     ${CMAKE_SOURCE_DIR}/lib/tcpip
     ${CMAKE_SOURCE_DIR}/lib/telnet
@@ -91,7 +90,6 @@ FILE(GLOB_RECURSE SOURCES
     ${CMAKE_SOURCE_DIR}/lib/bus/comlynx/*.cpp
     ${CMAKE_SOURCE_DIR}/lib/bus/cx16_i2c/*.cpp
     ${CMAKE_SOURCE_DIR}/lib/bus/drivewire/*.cpp
-    ${CMAKE_SOURCE_DIR}/lib/bus/h89/*.cpp
     ${CMAKE_SOURCE_DIR}/lib/bus/iec/*.cpp
     ${CMAKE_SOURCE_DIR}/lib/bus/iwm/*.c
     ${CMAKE_SOURCE_DIR}/lib/bus/iwm/*.cpp
@@ -117,7 +115,6 @@ FILE(GLOB_RECURSE SOURCES
     ${CMAKE_SOURCE_DIR}/lib/device/comlynx/*.cpp
     ${CMAKE_SOURCE_DIR}/lib/device/cx16_i2c/*.cpp
     ${CMAKE_SOURCE_DIR}/lib/device/drivewire/*.cpp
-    ${CMAKE_SOURCE_DIR}/lib/device/h89/*.cpp
     ${CMAKE_SOURCE_DIR}/lib/device/iec/*.cpp
     ${CMAKE_SOURCE_DIR}/lib/device/iwm/*.cpp
     ${CMAKE_SOURCE_DIR}/lib/device/mac/*.cpp
@@ -143,7 +140,6 @@ FILE(GLOB_RECURSE SOURCES
     ${CMAKE_SOURCE_DIR}/lib/fnxml/*.cpp
     ${CMAKE_SOURCE_DIR}/lib/ftp/*.cpp
     ${CMAKE_SOURCE_DIR}/lib/fuji/*.cpp
-    ${CMAKE_SOURCE_DIR}/lib/gpiox/*.cpp
     ${CMAKE_SOURCE_DIR}/lib/hardware/*.cpp
     ${CMAKE_SOURCE_DIR}/lib/http/*.cpp
     ${CMAKE_SOURCE_DIR}/lib/meatloaf/*.cpp
@@ -156,6 +152,7 @@ FILE(GLOB_RECURSE SOURCES
     ${CMAKE_SOURCE_DIR}/lib/qrcode/*.cpp
     ${CMAKE_SOURCE_DIR}/lib/sam/*.c
     ${CMAKE_SOURCE_DIR}/lib/sam/*.cpp
+    ${CMAKE_SOURCE_DIR}/lib/stuffit/*.c
     ${CMAKE_SOURCE_DIR}/lib/task/*.cpp
     ${CMAKE_SOURCE_DIR}/lib/tcpip/*.cpp
     ${CMAKE_SOURCE_DIR}/lib/telnet/*.c
@@ -165,11 +162,26 @@ FILE(GLOB_RECURSE SOURCES
     ${CMAKE_SOURCE_DIR}/lib/webdav/*.cpp
 )
 
+# Written by build_pico.py except on clean; GENERATED lets CMake configure
+# without it.
+set(PICO_BLOB_SOURCE ${CMAKE_BINARY_DIR}/fn_pico_blob_data.cpp)
+if(NOT CMAKE_BUILD_EARLY_EXPANSION)
+    set_source_files_properties(${PICO_BLOB_SOURCE} PROPERTIES GENERATED TRUE)
+endif()
+list(APPEND SOURCES ${PICO_BLOB_SOURCE})
+
 idf_component_register(
     INCLUDE_DIRS ${INCLUDES}
     SRCS ${SOURCES}
     PRIV_REQUIRES esp_driver_uart esp_netif esp_driver_gpio fatfs vfs json esp_wifi mbedtls console app_update spi_flash mlff esp_driver_ledc expat gumbo gumbo-query http_parser esp-tls tcp_transport esp_driver_gptimer esp_driver_tsens esp_http_client esp_websocket_client libssh
 )
+
+# NOTE: embedding companion-MCU firmware does NOT happen here. PlatformIO's
+# espidf integration uses this CMakeLists.txt only to *discover* the
+# source/include/flags graph -- it links via its own SCons build, which
+# never sees target_link_libraries()/EMBED_FILES calls added here (the
+# generated build.ninja has no firmware.elf link rule at all). Instead
+# build_pico.py generates fn_pico_blob_data.cpp, added to SOURCES above.
 
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-unused-value)
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-unused-variable)

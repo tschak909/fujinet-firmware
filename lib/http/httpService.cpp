@@ -1449,6 +1449,46 @@ esp_err_t fnHttpService::get_handler_files_download(httpd_req_t *req)
     return ESP_OK;
 }
 
+#ifdef BUILD_MAC
+// Mac mount list data, refetched by the page when a slot loads or unloads
+esp_err_t fnHttpService::get_handler_mac_slots(httpd_req_t *req)
+{
+    std::string json = fnHttpServiceParser::mac_slots_json();
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_send(req, json.c_str(), json.length());
+    return ESP_OK;
+}
+
+// Activity counters of the five Mac slots, polled by the mount list
+esp_err_t fnHttpService::get_handler_mac_activity(httpd_req_t *req)
+{
+    char buf[512];
+    int n = snprintf(buf, sizeof(buf), "{\"ms\":%lu,\"slots\":[", static_cast<unsigned long>(fnSystem.millis()));
+    for (int i = 0; i <= MAC_FLOPPY_SLOT && n < static_cast<int>(sizeof(buf)); i++)
+    {
+        DISK_DEVICE *dd = theFuji->get_disk_dev(i);
+        n += snprintf(buf + n, sizeof(buf) - n,
+                      "%s{\"n\":%d,\"loaded\":%s,\"r\":%lu,\"w\":%lu,\"e\":%lu,\"s\":%lu",
+                      i ? "," : "", i + 1, dd->is_loaded() ? "true" : "false",
+                      static_cast<unsigned long>(dd->act_reads), static_cast<unsigned long>(dd->act_writes), static_cast<unsigned long>(dd->act_errors),
+                      static_cast<unsigned long>(dd->act_status));
+        if (i == MAC_FLOPPY_SLOT && n < static_cast<int>(sizeof(buf)))
+            n += snprintf(buf + n, sizeof(buf) - n, ",\"spin\":%s,\"cyl\":%d",
+                          dd->act_spinning ? "true" : "false", dd->get_track_pos() / 2);
+        if (n < static_cast<int>(sizeof(buf)))
+            n += snprintf(buf + n, sizeof(buf) - n, "}");
+    }
+    if (n < static_cast<int>(sizeof(buf)))
+        n += snprintf(buf + n, sizeof(buf) - n, "]}");
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_send(req, buf, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+}
+#endif // BUILD_MAC
+
 esp_err_t fnHttpService::post_handler_files_action(httpd_req_t *req)
 {
     if (req->content_len == 0 || req->content_len > FILEMANAGER_MAX_POST_SIZE)
@@ -2313,6 +2353,22 @@ httpd_handle_t fnHttpService::start_server(serverstate &state)
          .is_websocket = false,
          .handle_ws_control_frames = false,
          .supported_subprotocol = nullptr},
+#ifdef BUILD_MAC
+        {.uri = "/mac/activity",
+         .method = HTTP_GET,
+         .handler = get_handler_mac_activity,
+         .user_ctx = NULL,
+         .is_websocket = false,
+         .handle_ws_control_frames = false,
+         .supported_subprotocol = nullptr},
+        {.uri = "/mac/slots",
+         .method = HTTP_GET,
+         .handler = get_handler_mac_slots,
+         .user_ctx = NULL,
+         .is_websocket = false,
+         .handle_ws_control_frames = false,
+         .supported_subprotocol = nullptr},
+#endif
         {.uri = "/files/action",
          .method = HTTP_POST,
          .handler = post_handler_files_action,
@@ -2407,8 +2463,13 @@ httpd_handle_t fnHttpService::start_server(serverstate &state)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.task_priority = 12; // Bump this higher than fnService loop
     config.core_id = 0; // Pin to CPU core 0
+#ifdef BUILD_MAC
+    // mounting a StuffIt archive unstuffs it inside this task
+    config.stack_size = 24576;
+#else
     config.stack_size = 12288;
-    // Budget: 35 routes registered here + 11 WebDAV = 46 handlers
+#endif
+    // Budget: up to 37 routes registered here (Mac) + 12 WebDAV = 49 handlers
     config.max_uri_handlers = 64;
     config.max_resp_headers = 16;
     config.keep_alive_enable = true;

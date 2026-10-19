@@ -294,7 +294,8 @@ void fnHttpService::send_header_footer(struct mg_connection *c, int headfoot)
     }
     else
     {
-        fread(buf, 1, sz - 1, fInput);
+        size_t rlen = fread(buf, 1, sz - 1, fInput);
+        buf[rlen] = 0;
         string contents = fnHttpServiceParser::parse_contents(string(buf));
         free(buf);
         mg_http_write_chunk(c, contents.data(), contents.length());
@@ -523,11 +524,8 @@ int fnHttpService::post_handler_printer_clear(struct mg_connection *c)
     PRINTER_CLASS *printer = (PRINTER_CLASS *)fnPrinters.get_ptr(0);
     printer_emu *emu = printer->getPrinterPtr();
 
-    emu->closeOutput();
+    int remove_result = emu->removeOutput();
     printer->reset_printer();
-
-    // Try to remove the file (may fail on some filesystems)
-    int remove_result = fsFlash.remove("/paper");
     Debug_printf("Attempting to remove /paper, result: %d\n", remove_result);
 
     mg_http_reply(c, 200, "Content-Type: application/json\r\n",

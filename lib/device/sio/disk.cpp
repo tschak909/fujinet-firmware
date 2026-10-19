@@ -227,6 +227,13 @@ mediatype_t sioDisk::mount(fnFile *f, const char *filename, uint32_t disksize,
     //  MediaType::discover_mediatype(filename) can detect CAS and WAV files
     Debug_print("disk MOUNT\n");
 
+    // A tape being replaced: the cassette must let go of its file first (see unmount()).
+    if (_is_tape)
+    {
+        _is_tape = false;
+        platformFuji.cassette()->stop_fsk_loader();
+    }
+
     // Destroy any existing MediaType
     if (_disk != nullptr)
     {
@@ -244,6 +251,7 @@ mediatype_t sioDisk::mount(fnFile *f, const char *filename, uint32_t disksize,
     case MEDIATYPE_CAS:
     case MEDIATYPE_WAV:
         // open the cassette file
+        _is_tape = true;
         platformFuji.cassette()->mount_cassette_file(f, disksize);
         return disk_type;
         // TODO left off here for tape cassette
@@ -300,6 +308,14 @@ void sioDisk::unmount()
 {
     Debug_print("disk UNMOUNT\n");
 
+    // A tape has no MediaType, so nothing below sees it, yet the progressive FSK loader reads its file
+    // from its own task and the caller closes that file right after this returns.
+    if (_is_tape)
+    {
+        _is_tape = false;
+        platformFuji.cassette()->stop_fsk_loader();
+    }
+
     if (_disk != nullptr)
     {
         _disk->unmount();
@@ -312,11 +328,11 @@ void sioDisk::unmount()
 }
 
 // Create blank disk
-success_is_true sioDisk::write_blank(fnFile *f, uint16_t sectorSize, uint16_t numSectors)
+success_is_true sioDisk::write_blank(fnFile *f, const NewDiskRequest &req)
 {
     Debug_print("disk CREATE NEW IMAGE\n");
 
-    return MediaTypeATR::create(f, sectorSize, numSectors);
+    return MediaTypeATR::create(f, req.sectorSize, req.numSectors);
 }
 
 // Process command

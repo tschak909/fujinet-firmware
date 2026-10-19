@@ -6,7 +6,7 @@
 # CONFIGURATION INI FILE USAGE
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
-PIO_VENV_ROOT="${PLATFORMIO_CORE_DIR:-${HOME}/.platformio/penv}"
+PIO_VENV_ROOT="${PLATFORMIO_CORE_DIR:-${HOME}/.platformio}/penv"
 PC_VENV_ROOT="${SCRIPT_DIR}/build/.venv"
 
 BUILD_ALL=0
@@ -21,6 +21,7 @@ PC_TARGET=""
 DEBUG_PC_BUILD=0
 UPLOAD_IMAGE=0
 UPLOAD_FS=0
+PICO_ONLY=0
 DEV_MODE=0
 ZIP_MODE=0
 AUTOCLEAN=1
@@ -30,23 +31,129 @@ CMAKE_GENERATOR=""
 INI_FILE="${SCRIPT_DIR}/platformio-generated.ini"
 LOCAL_INI_VALUES_FILE="${SCRIPT_DIR}/platformio.local.ini"
 
-# Function to check if the specified Python version is 3
+# A [fujinet] value from platformio.common.ini, where the build's minimum
+# versions live. Read with awk because Python may not be available yet.
+common_value() {
+  awk -v key="$1" '
+    /^\[/ { in_section = ($0 == "[fujinet]"); next }
+    in_section && $0 ~ "^"key"[ \t]*=" {
+      sub("^"key"[ \t]*=[ \t]*", ""); sub(/[ \t]*;.*$/, ""); print; exit
+    }
+  ' "${SCRIPT_DIR}/platformio-ini-files/platformio.common.ini"
+}
+
+# Succeeds when version $1 is at least $2, compared numerically part by part.
+version_ge() {
+  local IFS=. i x y
+  local -a a=($1) b=($2)
+  for ((i = 0; i < ${#b[@]}; i++)); do
+    x=${a[i]//[^0-9]/}; y=${b[i]//[^0-9]/}
+    (( 10#${x:-0} > 10#${y:-0} )) && return 0
+    (( 10#${x:-0} < 10#${y:-0} )) && return 1
+  done
+  return 0
+}
+
+# Succeeds when $1 is a Python of at least PYTHON_MIN.
 check_python_version() {
   local python_bin=$1
 
   if ! command -v "${python_bin}" &> /dev/null; then
     return 1
   fi
+  version_ge "$(${python_bin} --version 2>&1 | cut -d' ' -f2)" "${PYTHON_MIN}"
+}
 
-  # Extract the major version number
-  local major_version="$(${python_bin} --version 2>&1 | cut -d' ' -f2 | cut -d'.' -f1)"
+RULE="========================================================================"
 
-  # Verify if it's Python 3
-  if [ "${major_version}" -eq 3 ]; then
+# A boxed list of missing prerequisites, one argument per item, set apart from
+# the output around it.
+report_missing() {
+  echo
+  echo "${RULE}"
+  echo "Missing build prerequisites:"
+  printf '  - %s\n' "$@"
+  echo "${RULE}"
+}
+
+# Succeeds with -y, or when the person at the terminal answers yes.
+confirm() {
+  if [ ${ANSWER_YES} -eq 1 ] ; then
+    echo "$1 [y/N] y (-y)"
     return 0
-  else
+  fi
+  [ -t 0 ] || return 1
+  local answer
+  read -r -p "$1 [y/N] " answer
+  [[ "$answer" =~ ^[Yy] ]]
+}
+
+# The package-manager command that installs Python 3 with venv here, or nothing.
+python_install_command() {
+  case "$(uname -s)" in
+    Darwin) echo "brew install python3" ; return ;;
+    MINGW*|MSYS*|CYGWIN*) echo "pacman -S --noconfirm python" ; return ;;
+  esac
+  [ -r /etc/os-release ] || return
+  # RHEL 9, Amazon Linux 2023 and SUSE 15 ship a python3 older than PYTHON_MIN.
+  case " $(. /etc/os-release; echo "$ID $ID_LIKE") " in
+    *" debian "*|*" ubuntu "*) echo "apt-get update && apt-get install -y python3 python3-venv" ;;
+    *" rhel "*|*" centos "*|*" amzn "*) echo "dnf install -y python3.12" ;;
+    *" fedora "*) echo "dnf install -y python3" ;;
+    *" arch "*) echo "pacman -Syu --needed --noconfirm python" ;;
+    *" suse "*|*" opensuse "*)
+      case "$(. /etc/os-release; echo "$VERSION_ID")" in
+        15*) echo "zypper install -y python312" ;;
+        *) echo "zypper install -y python3" ;;
+      esac ;;
+    *" alpine "*) echo "apk add python3" ;;
+  esac
+}
+
+# Offers to install Python with venv. Root on Linux comes from sudo, which
+# prompts for its own password; with -y it runs as sudo -n, which fails rather
+# than waiting for one.
+install_python() {
+  local cmd runner="" shown
+  cmd=$(python_install_command)
+  if [ -z "$cmd" ] ; then
+    echo "Install Python ${PYTHON_MIN} or newer with its venv module, then run this again."
     return 1
   fi
+  case "$(uname -s)" in
+    Darwin) ;;
+    MINGW*|MSYS*|CYGWIN*)
+      echo "To install it, run:"
+      echo "  $cmd"
+      return 1 ;;
+    *)
+      if [ "$(id -u)" -ne 0 ] ; then
+        if ! command -v sudo > /dev/null ; then
+          echo "To install it, run as root:"
+          echo "  $cmd"
+          return 1
+        fi
+        runner="sudo"
+        [ ${ANSWER_YES} -eq 1 ] && runner="sudo -n"
+      fi ;;
+  esac
+  shown="${runner:+sudo }sh -c '$cmd'"
+  if confirm "Install Python now (runs: $shown)?" && ${runner} sh -c "$cmd" ; then
+    return 0
+  fi
+  echo "To install it yourself, run:"
+  echo "  $shown"
+  return 1
+}
+
+# Sets PYTHON to a Python of at least PYTHON_MIN that can create venvs.
+find_python() {
+  for PYTHON in python python3 python3.14 python3.13 python3.12 python3.11 python3.10 ; do
+    if check_python_version "${PYTHON}" && ${PYTHON} -c "import venv, ensurepip" 2>/dev/null ; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 function display_board_names {
@@ -70,6 +177,13 @@ function show_help {
   echo "   -t TGT   # run target task (default of none means do build, but -b must be specified"
   echo "   -n       # do not autoclean"
   echo ""
+  echo "companion MCU (RP2040/RP2350) options:"
+  echo "   -P       # build ONLY the companion (pico) firmware for the target board, then exit"
+  echo "            # (see the [fujinet] pico_* keys documented in build-sh-readme.md)"
+  echo "            # env var FUJINET_SKIP_PICO=1 skips the companion firmware build entirely"
+  echo "            # during a normal -b build and emits a stub instead (used by -a/build-all.sh"
+  echo "            # on boards/runners that don't have the companion toolchain installed)"
+  echo ""
   echo "one-off firmware options"
   echo "   -a       # build ALL target platforms to test changes work on all platforms"
   echo "   -z       # build flashable zip"
@@ -77,7 +191,7 @@ function show_help {
   echo "fujinet-firmware board setup options:"
   echo "   -s NAME  # Setup a new board from name, writes a new file 'platformio.local.ini'"
   echo "   -i FILE  # use FILE as INI instead of platformio-generated.ini"
-  echo "   -l FILE  # use FILE to use instead of 'platform.local.ini'"
+  echo "   -l FILE  # use FILE to use instead of 'platformio.local.ini'"
   echo ""
   echo "fujinet-pc (cmake) options:"
   echo "   -c       # run clean before build"
@@ -86,7 +200,8 @@ function show_help {
   echo "   -G GEN   # Use GEN as the Generator for cmake (e.g. -G \"Unix Makefiles\" )"
   echo ""
   echo "other options:"
-  echo "   -y       # answers any questions with Y automatically, for unattended builds"
+  echo "   -y       # answers any questions with Y automatically, for unattended builds,"
+  echo "            # including installing missing build prerequisites"
   echo "   -h       # this help"
   echo "   -V       # Override default Python virtual environment location (e.g. \"-V ~/.platformio/penv\")"
   echo "            # Alternatively, this can be set with the shell env var VENV_ROOT"
@@ -110,7 +225,7 @@ if [ $# -eq 0 ] ; then
   show_help
 fi
 
-while getopts "abcde:fgG:hi:l:mnp:s:St:uyzV:" flag
+while getopts "abcde:fgG:hi:l:mnPp:s:St:uyzV:" flag
 do
   case "$flag" in
     a) BUILD_ALL=1 ;;
@@ -124,6 +239,7 @@ do
     l) LOCAL_INI_VALUES_FILE=${OPTARG} ;;
     m) SHOW_MONITOR=1 ;;
     n) AUTOCLEAN=0 ;;
+    P) PICO_ONLY=1 ;;
     p) PC_TARGET=${OPTARG} ;;
     t) TARGET_NAME=${OPTARG} ;;
     s) SETUP_NEW_BOARD=${OPTARG} ;;
@@ -140,26 +256,23 @@ done
 shift $((OPTIND - 1))
 
 # Requirements:
-#   - python3
-#   - python3 can create venv - PlatformIO also needs this to install penv
-#   - if doing ESP32 build:
-#     - PlatformIO
+#   - python_min from platformio.common.ini, offered from the system package
+#     manager; PlatformIO is installed into the venv
+#   - what build_prereqs.py checks (a host C/C++ compiler, PlatformIO's
+#     version, the Python modules, a companion-MCU board's tools), offered
+#     together in one prompt
 #   - not ESP32 build:
-#     - cmake
+#     - make and cmake
 
-# Make sure we have python3 and it has the ability to create venvs
-PYTHON=python
-if ! check_python_version "${PYTHON}" ; then
-    PYTHON=python3
-    if ! check_python_version "${PYTHON}" ; then
-        echo "Python 3 is not installed"
+PYTHON_MIN=$(common_value python_min)
+PYTHON_MIN=${PYTHON_MIN:-3}
+if ! find_python ; then
+    report_missing "Python ${PYTHON_MIN} or newer, with its venv module: not found"
+    install_python || exit 1
+    if ! find_python ; then
+        echo "Python ${PYTHON_MIN} or newer with the venv module is still not available."
         exit 1
     fi
-fi
-
-if ! ${PYTHON} -c "import venv, ensurepip" 2>/dev/null ; then
-    echo "Error: Python venv module is not installed."
-    exit 1
 fi
 
 # if ! "$PYTHON" -m pip --version >/dev/null 2>&1; then
@@ -179,27 +292,18 @@ ACTIVATE="${VENV_ROOT}/bin/activate"
 # For Windows/MSYS2
 ALT_ACTIVATE="${VENV_ROOT}/Scripts/activate"
 if [ -z "${PC_TARGET}" ] ; then
-    # Doing a PlatformIO build, locate PlatformIO. It may or may not
-    # already be in the users' path.
+    # PlatformIO build: activate now in case pio is only in the venv. A
+    # missing pio is installed into the venv below.
     if [ -f "${ACTIVATE}" ] ; then
-        # Activate now in case pio isn't already in PATH
         source "${ACTIVATE}"
-    fi
-    PIO=$(command -v pio)
-    if [ -z "${PIO}" ] ; then
-        echo Please install platformio
-        exit 1
     fi
 fi
 
-# Let the user know about any required packages they need to install
+# Let the user know about any required packages they need to install; the
+# host C/C++ compiler is checked and offered by build_prereqs.py.
 MISSING=""
 if [ -n "${PC_TARGET}" ] ; then
-    COMPILER=g++
-    if [ "$MSYSTEM" = "CLANG64" ]; then
-        COMPILER=clang++
-    fi
-    for REQUIRED in ${COMPILER} make cmake ; do
+    for REQUIRED in make cmake ; do
         if ! command -v ${REQUIRED} > /dev/null ; then
             MISSING="${REQUIRED} ${MISSING}"
         fi
@@ -224,9 +328,39 @@ normalize_path() {
 
 same_dir() {
     [ -d "$1" ] && [ -d "$2" ] || return 1
-    stat1=$(stat -c "%d:%i" "$1")
-    stat2=$(stat -c "%d:%i" "$2")
-    [ "$stat1" = "$stat2" ]
+    # GNU stat takes -c, BSD/macOS stat -f.
+    stat1=$(stat -c "%d:%i" "$1" 2>/dev/null || stat -f "%d:%i" "$1")
+    stat2=$(stat -c "%d:%i" "$2" 2>/dev/null || stat -f "%d:%i" "$2")
+    [ -n "$stat1" ] && [ "$stat1" = "$stat2" ]
+}
+
+# Submodules a given config names are initialized if absent and must be at their
+# pinned commit; others only warn when off their pin. Never moves a checkout.
+check_submodules() {
+  [ -e "${SCRIPT_DIR}/.git" ] && [ -f "${SCRIPT_DIR}/.gitmodules" ] || return 0
+  command -v git > /dev/null || return 0
+  local sub pattern config needed status
+  for sub in $(git -C "$SCRIPT_DIR" config -f .gitmodules --get-regexp '\.path$' | cut -d' ' -f2) ; do
+    pattern="(^|[^[:alnum:]_.-])$(printf '%s' "$sub" | sed 's/[.[\*^$()+?{|]/\\&/g')([^[:alnum:]_.-]|\$)"
+    needed=0
+    for config in "$@" ; do
+      if [ -f "$config" ] && grep -v '^[[:space:]]*[;#]' "$config" | grep -Eq "$pattern" ; then
+        needed=1
+      fi
+    done
+    status=$(git -C "$SCRIPT_DIR" submodule status -- "$sub" | cut -c1)
+    if [ "$status" = "-" ] && [ $needed -eq 1 ] ; then
+      echo "Initializing submodule ${sub}"
+      git -C "$SCRIPT_DIR" submodule update --init --recursive -- "$sub" || return 1
+    elif [ "$status" = "+" ] ; then
+      if [ $needed -eq 1 ] ; then
+        echo "ERROR: submodule ${sub} is not at the commit this repository pins. To check out the pinned commit, run:"
+        echo "git submodule update --init --recursive ${sub}"
+        return 1
+      fi
+      echo "WARNING: submodule ${sub} is not at its pinned commit; this build does not use it."
+    fi
+  done
 }
 
 if [[ "$VIRTUAL_ENV" != "$VENV_ROOT" ]] ; then
@@ -260,12 +394,17 @@ fi
 # If pio is the one installed by the system it runs the system
 # python instead of the penv python, blocking pip from installing
 # packages
-if [ -z "${PC_BUILD}" ] ; then
+if [ -z "${PC_TARGET}" ] ; then
     PIO=$(command -v pio)
     if [ "${PIO}" != "${VENV_ROOT}/bin/pio" ] ; then
         pip install platformio || exit 1
     fi
 fi
+
+# -y passed on to build_prereqs.py, which checks everything after Python and
+# PlatformIO and asks once before installing what is missing.
+PREREQ_YES=""
+[ ${ANSWER_YES} -eq 1 ] && PREREQ_YES="--yes"
 
 echo Virtual env: "${VIRTUAL_ENV}"
 echo venv root: "${VENV_ROOT}"
@@ -313,6 +452,9 @@ if [ ! -z "$PC_TARGET" ] ; then
     rm -f $SCRIPT_DIR/build/.ninja* 2>/dev/null
   fi
 
+  ${PYTHON} "${SCRIPT_DIR}/build_prereqs.py" --pc ${PREREQ_YES} || exit 1
+  check_submodules || exit 1
+
   cd $SCRIPT_DIR/build
   # Write out the compile commands for clangd etc to use
   if [ -z "$GEN_CMD" ]; then
@@ -339,15 +481,6 @@ if [ ! -z "$PC_TARGET" ] ; then
   if [ $? -ne 0 ] ; then
     echo "Error running initial cmake. Aborting"
     exit 1
-  fi
-
-  # python_modules.txt contains pairs of module name and installable package names, separated by pipe symbol
-  MOD_LIST=$(sed '/^#/d' < "${SCRIPT_DIR}/python_modules.txt" | cut -d\| -f1 | tr '\n' ' ' | sed 's# *$##;s# \{1,\}# #g')
-  echo "Checking python modules installed: $MOD_LIST"
-  ${PYTHON} -c "import importlib.util, sys; sys.exit(0 if all(importlib.util.find_spec(mod.strip()) for mod in '''$MOD_LIST'''.split()) else 1)"
-  if [ $? -eq 1 ] ; then
-    echo "At least one of the required python modules is missing"
-    bash ${SCRIPT_DIR}/install_python_modules.sh
   fi
 
   cmake --build .
@@ -401,7 +534,7 @@ if [ -z "$SETUP_NEW_BOARD" ] ; then
   fi
   create_result=$?
 else
-  # this will create a clean platformio INI file, but honours the command line args
+  # this will create a clean platformio INI file, but honors the command line args
   if [ -e ${LOCAL_INI_VALUES_FILE} -a $ANSWER_YES -eq 0 ] ; then
     echo "WARNING! This will potentially overwrite any local changes in $LOCAL_INI_VALUES_FILE"
     echo -n "Do you want to proceed? (y|N) "
@@ -426,6 +559,61 @@ if [ $create_result -ne 0 ] ; then
 fi
 
 BUILD_BOARD=$(grep '^build_board = ' $INI_FILE | cut -d" " -f 3)
+
+if [ ${PICO_ONLY} -eq 1 ] ; then
+  # Companion firmware only -- fast iteration without a full ESP-IDF build.
+  # Placed after BUILD_BOARD/INI_FILE are settled so -s/-l/-i apply, and
+  # honors -e (build_pico.py falls back to build-platforms/ when the
+  # generated ini names a different board). No-ops for a board with no
+  # [fujinet] pico_src.
+  PICO_ENV="${ENV_NAME:-$BUILD_BOARD}"
+  echo "=============================================================="
+  echo "Building companion (pico) firmware only for board: $PICO_ENV"
+  check_submodules "$INI_FILE" "$SCRIPT_DIR/build-platforms/platformio-${PICO_ENV}.ini" || exit 1
+  python "$SCRIPT_DIR/build_prereqs.py" --board "$PICO_ENV" --ini "$INI_FILE" ${PREREQ_YES} || exit 1
+  python3 "$SCRIPT_DIR/build_pico.py" "$PICO_ENV" --ini "$INI_FILE"
+  exit $?
+fi
+
+# Every prerequisite after Python and PlatformIO, checked only before a build,
+# upload or monitor. Choosing a board (-s) or cleaning (-c) needs none of them.
+if [ ${RUN_BUILD} -eq 1 ] || [ ${UPLOAD_IMAGE} -eq 1 ] || [ ${UPLOAD_FS} -eq 1 ] || \
+   [ ${ZIP_MODE} -eq 1 ] || [ ${SHOW_MONITOR} -eq 1 ] || [ -n "${TARGET_NAME}" ] ; then
+  check_submodules "$INI_FILE" "$SCRIPT_DIR/build-platforms/platformio-${ENV_NAME:-$BUILD_BOARD}.ini" || exit 1
+  python "$SCRIPT_DIR/build_prereqs.py" --board "${ENV_NAME:-$BUILD_BOARD}" --ini "$INI_FILE" ${PREREQ_YES} || exit 1
+fi
+
+# $INI_FILE can have more than one section defining the same key (e.g. a
+# generic default [env] alongside a board-specific [env:<board>]) -- a
+# plain "grep ^key $INI_FILE" matches every occurrence and silently
+# produces a broken multi-value string (space-joined by command
+# substitution). Scope the lookup to one section instead, falling back to
+# the generic [env] section (PlatformIO's own inheritance base) if the
+# board-specific section doesn't redefine the key -- e.g. monitor_speed is
+# only ever set once, at [env] level, and inherited by every board. Usage:
+#   read_ini_value "[env:fujiversal-intv]" upload_port
+read_ini_value() {
+  local section="$1" key="$2" value
+  value=$(_read_ini_value_from_section "$section" "$key")
+  if [ -z "$value" ] && [ "$section" != "[env]" ]; then
+    value=$(_read_ini_value_from_section "[env]" "$key")
+  fi
+  echo "$value"
+}
+
+_read_ini_value_from_section() {
+  local section="$1" key="$2"
+  awk -v section="$section" -v key="$key" '
+    $0 == section { in_section=1; next }
+    /^\[/ { in_section=0 }
+    in_section && $0 ~ "^"key"[ \t]*=" {
+      sub("^"key"[ \t]*=[ \t]*", "");
+      sub(/[ \t]*;.*$/, "");
+      print;
+      exit
+    }
+  ' "$INI_FILE"
+}
 
 ##############################################################
 # ZIP MODE for building firmware zip file.
@@ -486,19 +674,97 @@ if [ ${UPLOAD_FS} -eq 1 ] ; then
 fi
 
 if [ ${UPLOAD_IMAGE} -eq 1 ] ; then
-  pio run -c $INI_FILE ${DEV_MODE_ARG} -t upload 2>&1
+  UPLOAD_ENV="${ENV_NAME:-$BUILD_BOARD}"
+  MERGE_BIN=$(read_ini_value "[fujinet]" merge_bin)
+  MERGED_NAME=$(read_ini_value "[fujinet]" merge_bin_name)
+  MERGED_NAME="${MERGED_NAME:-${UPLOAD_ENV}-merged.bin}"
+  MERGED_BIN="$SCRIPT_DIR/.pio/build/${UPLOAD_ENV}/${MERGED_NAME}"
+
+  # Anything other than yes/true/1/on falls through to `pio run -t upload`.
+  USE_MERGED=0
+  case "$(printf '%s' "${MERGE_BIN}" | tr '[:upper:]' '[:lower:]')" in
+    yes|true|1|on) USE_MERGED=1 ;;
+  esac
+
+  if [ ${USE_MERGED} -eq 1 ] ; then
+    # build_merge.py already folded bootloader+partition-table+app into one
+    # file during the build above, so flash that rather than pio's normal
+    # three-piece upload.
+    if [ ! -f "$MERGED_BIN" ] ; then
+      echo "Error: expected merged image not found: $MERGED_BIN"
+      echo "(build_merge.py should have produced this during the build step above)"
+      exit 1
+    fi
+
+    # Glob under PLATFORMIO_CORE_DIR, not PIO_VENV_ROOT/../packages -- the
+    # latter silently broke when PLATFORMIO_CORE_DIR pointed elsewhere.
+    ESPTOOL_PY=$(compgen -G "${PLATFORMIO_CORE_DIR:-${HOME}/.platformio}/packages/tool-esptoolpy*/esptool.py" | head -1)
+    if [ -z "$ESPTOOL_PY" ] ; then
+      echo "Error: esptool.py not found under ${PLATFORMIO_CORE_DIR:-${HOME}/.platformio}/packages/tool-esptoolpy*"
+      exit 1
+    fi
+
+    UPLOAD_PORT=$(read_ini_value "[env:${UPLOAD_ENV}]" upload_port)
+    UPLOAD_SPEED=$(read_ini_value "[env:${UPLOAD_ENV}]" upload_speed)
+    UPLOAD_SPEED="${UPLOAD_SPEED:-460800}"
+
+    # Always 0x0, on every chip -- NOT the lowest offset in
+    # flasher_args.json. merge_bin's --target-offset defaults to 0x0, so the
+    # image is zero-padded up from there. Those coincide on S3/C3 but not on
+    # ESP32-classic, where flashing at 0x1000 would shift everything 4K high.
+    FLASH_OFFSET="0x0"
+
+    echo "=============================================================="
+    echo "Flashing merged ${UPLOAD_ENV} image"
+    echo "  file:   ${MERGED_BIN}"
+    echo "  offset: ${FLASH_OFFSET}"
+    echo "  port:   ${UPLOAD_PORT:-<auto>}"
+    echo "  speed:  ${UPLOAD_SPEED}"
+    PORT_ARG=""
+    if [ -n "${UPLOAD_PORT}" ] ; then
+      PORT_ARG="--port ${UPLOAD_PORT}"
+    fi
+    # No --chip: esptool auto-detects it from the connected device, which
+    # for `write_flash` against real hardware is *more* correct than
+    # trusting the ini -- it catches the wrong board plugged in instead of
+    # silently flashing it with another chip's settings.
+    python3 "$ESPTOOL_PY" ${PORT_ARG} --baud "${UPLOAD_SPEED}" \
+      --before default_reset --after hard_reset \
+      write_flash "${FLASH_OFFSET}" "$MERGED_BIN"
+
+    PICO_SRC=$(read_ini_value "[fujinet]" pico_src)
+    if [ -n "${PICO_SRC}" ] ; then
+      echo ""
+      echo "Flashed. This image embeds a companion-MCU firmware built from"
+      echo "${PICO_SRC}, which the FujiNet pushes to the companion itself on"
+      echo "the next boot -- watch the monitor for PICOFW: lines, and leave"
+      echo "the board powered until one says OK or 'up to date'."
+    fi
+  else
+    pio run -c $INI_FILE ${DEV_MODE_ARG} -t upload 2>&1
+  fi
 fi
 
 if [ ${SHOW_MONITOR} -eq 1 ] ; then
   # device monitor hard codes to using platformio.ini, let's grab all the data it would use directly from our generated ini.
-  MONITOR_PORT=$(grep ^monitor_port $INI_FILE | cut -d= -f2 | cut -d\; -f1 | awk '{print $1}')
-  MONITOR_SPEED=$(grep ^monitor_speed $INI_FILE | cut -d= -f2 | cut -d\; -f1 | awk '{print $1}')
-  MONITOR_FILTERS=$(grep ^monitor_filters $INI_FILE | cut -d= -f2 | cut -d\; -f1 | tr ',' '\n' | sed 's/^ *//; s/ *$//' | awk '{printf("-f %s ", $1)}')
+  # Scoped to the actual target board's section: $INI_FILE can have more
+  # than one section defining monitor_port/monitor_speed/monitor_filters
+  # (e.g. a generic default [env] alongside [env:<board>]), and a plain
+  # "grep ^monitor_port" matches every occurrence, silently producing a
+  # broken multi-value string (this is exactly what broke `-m` -- pio saw
+  # two space-joined ports and rejected the second as an extra argument).
+  MONITOR_PORT=$(read_ini_value "[env:${BUILD_BOARD}]" monitor_port)
+  MONITOR_SPEED=$(read_ini_value "[env:${BUILD_BOARD}]" monitor_speed)
+  MONITOR_FILTERS=$(read_ini_value "[env:${BUILD_BOARD}]" monitor_filters | tr ',' '\n' | sed 's/^ *//; s/ *$//' | awk '{printf("-f %s ", $1)}')
 
   # warn the user if the build_board in platformio.ini (if exists) is not the same as INI_FILE version, as that means stacktrace will not work correctly
   # because the monitor does not allow an INI file to be set!!
-  PIO_BOARD=$(grep "build_board *=" platformio.ini | awk '{print $3}')
-  INI_BOARD=$(grep "build_board *=" ${INI_FILE} | awk '{print $3}')
+  # Anchored to line-start and excluding comments: the unanchored version
+  # also matched every "1;build_board = ..." commented-out alternative in
+  # platformio.ini, producing a garbled multi-name list instead of the one
+  # active value.
+  PIO_BOARD=$(grep "^build_board *=" platformio.ini | awk '{print $3}')
+  INI_BOARD=$(grep "^build_board *=" ${INI_FILE} | awk '{print $3}')
   if [ "${PIO_BOARD}" != "${INI_BOARD}" ]; then
     echo "╔═════════════════════════════════════════╗"
     echo "║                WARNING                  ║"

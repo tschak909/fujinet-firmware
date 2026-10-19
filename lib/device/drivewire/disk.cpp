@@ -158,6 +158,14 @@ mediatype_t drivewireDisk::mount(fnFile *f, const char *filename, uint32_t disks
 
 void drivewireDisk::unmount()
 {
+    Debug_print("DW disk UNMOUNT\n");
+
+    if (_media != nullptr)
+    {
+        delete _media;
+        _media = nullptr;
+    }
+    device_active = false;
 }
 
 void drivewireDisk::set_media_host(fujiHost *host)
@@ -168,6 +176,9 @@ void drivewireDisk::set_media_host(fujiHost *host)
 
 error_is_true drivewireDisk::read(uint32_t lsn, uint8_t *buf)
 {
+    if (_media == nullptr)
+        RETURN_ERROR_AS_TRUE();
+
     bool r = _media->read(lsn,0);
     // copy data to destination buffer, if provided
     if (buf)
@@ -179,9 +190,9 @@ error_is_true drivewireDisk::read(uint32_t lsn, uint8_t *buf)
 
 error_is_true drivewireDisk::write(uint32_t lsn, uint8_t *buf)
 {
-    if (!buf)
+    if (!buf || _media == nullptr)
     {
-        Debug_printv("BUFFER is NULL, IGNORED.");
+        Debug_printv("No buffer or media, IGNORED.");
         RETURN_ERROR_AS_TRUE();
     }
 
@@ -212,10 +223,10 @@ uint8_t drivewireDisk::get_media_status()
     return _media->status();
 }
 
-success_is_true drivewireDisk::write_blank(fnFile *f, uint8_t numDisks)
+success_is_true drivewireDisk::write_blank(fnFile *f, const NewDiskRequest &req)
 {
     uint8_t b[512];
-    size_t n = numDisks * 315;
+    size_t n = req.numDisks * 315;
 
     Debug_printf("write_blank num_disks: %u\n", n);
 

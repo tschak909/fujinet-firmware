@@ -7,7 +7,6 @@
 #include "Telnet.h"
 
 #include <stdlib.h>
-#include <errno.h>
 #include <string.h>
 #include "compat_inet.h"
 
@@ -25,8 +24,6 @@ static const telnet_telopt_t telopts[] = {
     {TELNET_TELOPT_COMPRESS2, TELNET_WONT, TELNET_DO},
     {TELNET_TELOPT_MSSP, TELNET_WONT, TELNET_DO},
     {-1, 0, 0}};
-
-static telnet_t *telnet;
 
 static void _event_handler(telnet_t *telnet, telnet_event_t *ev, void *user_data)
 {
@@ -91,7 +88,7 @@ NetworkProtocolTELNET::NetworkProtocolTELNET(std::string *rx_buf, std::string *t
 {
     Debug_printf("NetworkProtocolTELNET::ctor\r\n");
     server = nullptr;
-    telnet = telnet_init(telopts, _event_handler, 0, this);
+    _telnet = telnet_init(telopts, _event_handler, 0, this);
     newRxLen = 0;
 }
 
@@ -102,9 +99,10 @@ NetworkProtocolTELNET::~NetworkProtocolTELNET()
 {
     Debug_printf("NetworkProtocolTELNET::dtor\r\n");
 
-    if (telnet != nullptr)
+    if (_telnet != nullptr)
     {
-        telnet_free(telnet);
+        telnet_free(_telnet);
+        _telnet = nullptr;
     }
     newRxLen = 0;
 }
@@ -135,14 +133,14 @@ fujiError_t NetworkProtocolTELNET::open(PeoplesUrlParser *urlParser,
     // Only offer NAWS when the app actually gave a window size. With no size we
     // never mention NAWS, so negotiation is byte-for-byte the old behavior.
     if (err == FUJI_ERROR::NONE && naws_w > 0 && naws_h > 0)
-        telnet_negotiate(telnet, TELNET_WILL, TELNET_TELOPT_NAWS);
+        telnet_negotiate(_telnet, TELNET_WILL, TELNET_TELOPT_NAWS);
 
     return err;
 }
 
 
 /**
- * @brief Read len bytes into rx_buf, If protocol times out, the buffer should be null padded to length.
+ * @brief Read up to len bytes into rx_buf: fewer if fewer have arrived, an error if none have.
  * @param len number of bytes to read.
  * @return FUJI_ERROR::NONE on success, FUJI_ERROR::UNSPECIFIED on error
  */
@@ -162,16 +160,15 @@ fujiError_t NetworkProtocolTELNET::read(unsigned short len)
         }
 
         // Do the read from client socket.
-        client.read(newData.data(), len);
+        int actual_len = client.read(newData.data(), len);
 
-        telnet_recv(telnet, (char *)newData.data(), len);
-
-        // bail if the connection is reset.
-        if (errno == ECONNRESET)
+        if (actual_len <= 0)
         {
-            error = NDEV_STATUS::CONNECTION_RESET;
+            error = NDEV_STATUS::SOCKET_TIMEOUT;
             return FUJI_ERROR::UNSPECIFIED;
         }
+
+        telnet_recv(_telnet, (char *)newData.data(), actual_len);
 
         // Translate the freshly-read bytes exactly once.
         error = NDEV_STATUS::SUCCESS;
@@ -188,7 +185,7 @@ fujiError_t NetworkProtocolTELNET::read(unsigned short len)
 /**
  * @brief Write len bytes from tx_buf to protocol.
  * @param len The # of bytes to transmit, len should not be larger than buffer.
- * @return Number of bytes written.
+ * @return FUJI_ERROR::NONE on success, FUJI_ERROR::UNSPECIFIED on error
  */
 fujiError_t NetworkProtocolTELNET::write(unsigned short len)
 {
@@ -197,6 +194,7 @@ fujiError_t NetworkProtocolTELNET::write(unsigned short len)
     // Check for client connection
     if (!client.connected())
     {
+        transmitBuffer->clear();
         error = NDEV_STATUS::NOT_CONNECTED;
         return FUJI_ERROR::UNSPECIFIED; // error
     }
@@ -205,12 +203,14 @@ fujiError_t NetworkProtocolTELNET::write(unsigned short len)
     len = translate_transmit_buffer();
 
     // Do the write to client socket.
-    telnet_send(telnet, transmitBuffer->data(), len);
+    _sendFailed = false;
+    telnet_send(_telnet, transmitBuffer->data(), len);
+    transmitBuffer->clear();
 
-    // bail if the connection is reset.
-    if (errno == ECONNRESET)
+    if (_sendFailed)
     {
-        error = NDEV_STATUS::CONNECTION_RESET;
+        // The client stops itself on a send error, so a dead one was reset, not stalled.
+        error = client.connected() ? NDEV_STATUS::SOCKET_TIMEOUT : NDEV_STATUS::CONNECTION_RESET;
         return FUJI_ERROR::UNSPECIFIED;
     }
 
@@ -220,8 +220,9 @@ fujiError_t NetworkProtocolTELNET::write(unsigned short len)
     return FUJI_ERROR::NONE;
 }
 
+// Called once per fragment; after a short one, later fragments would each stall too.
 void NetworkProtocolTELNET::flush(const char *buf, unsigned short size)
 {
-    client.write((uint8_t *)buf, size);
-    transmitBuffer->clear();
+    if (!_sendFailed && client.write((uint8_t *)buf, size) != size)
+        _sendFailed = true;
 }
