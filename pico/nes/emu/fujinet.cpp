@@ -127,7 +127,7 @@ void nes_fujinet_device::device_start()
 	m_serve.wram = m_wram;
 	m_serve.wram_size = NESMAP_WRAM_MAX;
 	m_serve.vectors = m_vectors;
-	m_serve.sram_en = false;
+	m_serve.prg_live = false;
 	m_serve.mailbox = true;
 	m_serve.wram_en = false;
 	m_serve.wram_wp = false;
@@ -262,64 +262,31 @@ void nes_fujinet_device::mapper_write(uint16_t addr, uint8_t data)
     loading: the same sequence as fuji_cart.c
 -------------------------------------------------*/
 
-void nes_fujinet_device::publish_slice()
-{
-	const uint8_t *src;
-	unsigned dst, off;
-
-	if (m_ls_slice < m_ls_nprg)
-	{
-		m_prg_slot[0] = uint8_t(m_ls_slice / 8);
-		src = m_ls_base + nesmap_prg_offset(&m_ls_plan) + m_ls_slice * 1024;
-		dst = FN_LOAD_DST_PRG;
-		off = m_ls_slice % 8;
-	}
-	else
-	{
-		unsigned k = unsigned(m_ls_slice - m_ls_nprg);
-		unsigned w = k / 8;
-		if (k == 0)
-			m_chr_we = true;
-		for (int i = 0; i < NESMAP_CHR_SLOTS; i++)
-			m_chr_slot[i] = uint16_t(w * 8 + i);
-		src = m_ls_base + nesmap_chr_offset(&m_ls_plan) + k * 1024;
-		dst = FN_LOAD_DST_CHR;
-		off = k % 8;
-	}
-	std::memcpy(m_arena + FN_R_DATA, src, FN_R_SLICE_LEN);
-	poke(FN_R_LOAD_DST, uint8_t(dst));
-	poke(FN_R_LOAD_OFF, uint8_t(off));
-	poke(FN_R_LOAD_PCT, uint8_t((m_ls_slice * 100u) / (m_ls_nprg + m_ls_nchr)));
-	m_ls_seq = uint8_t(m_ls_seq == 255 ? 1 : m_ls_seq + 1);
-	poke(FN_R_LOAD_SEQ, m_ls_seq);
-	poke(FN_R_LOAD_STATE, FN_LOAD_SLICE);
-	m_ls_ack_pending = true;
-}
-
+// The Rev1 cart installs an image in place while the console waits in the
+// loader: PRG becomes the engine's banks on RP-A, CHR goes to RP-B over the
+// link. Here both are copies into the model's PRG and CHR memory, and the
+// loader is told LOAD_DONE straight away -- it copies nothing.
 void nes_fujinet_device::begin_load(const uint8_t *base, const nesmap_plan_t *plan)
 {
-	m_ls_base = base;
 	m_ls_plan = *plan;
-	m_ls_nprg = plan->prg_size / 1024;
-	m_ls_nchr = plan->chr_size / 1024;
-	m_ls_slice = 0;
-	m_ls_ack_pending = false;
-	m_ls_state = LS_RUN;
 	m_have_staged = false;
 	m_armed = false;
 	m_map_live = false;
 
 	m_serve.loading = true;
 	m_serve.mailbox = true;
-	m_serve.sram_en = true;
-	m_prg_we = true;
-	m_chr_we = false;
 	set_irq_line(CLEAR_LINE);
-	poke(FN_R_SRAM_STATE, 1);
 	poke(FN_R_BOOT_STATE, FN_BOOT_IDLE);
+	std::memcpy(m_prg_sram.data(), base + nesmap_prg_offset(plan), plan->prg_size);
+	if (plan->chr_size)
+		std::memcpy(m_chr_sram.data(), base + nesmap_chr_offset(plan), plan->chr_size);
+	else
+		std::fill(m_chr_sram.begin(), m_chr_sram.begin() + plan->chr_ram_size, 0);
+	m_serve.prg_live = true;
 	if (m_debug)
-		fprintf(stderr, "fujinet: loading %u PRG + %u CHR slices\n", m_ls_nprg, m_ls_nchr);
-	publish_slice();
+		fprintf(stderr, "fujinet: installing %u K PRG + %u K CHR\n", plan->prg_size / 1024,
+				plan->chr_size / 1024);
+	finish_load();
 }
 
 void nes_fujinet_device::finish_load()
@@ -353,16 +320,6 @@ void nes_fujinet_device::slice_acked()
 {
 	switch (m_ls_state)
 	{
-	case LS_RUN:
-		if (!m_ls_ack_pending)
-			return;
-		m_ls_ack_pending = false;
-		m_ls_slice++;
-		if (m_ls_slice < m_ls_nprg + m_ls_nchr)
-			publish_slice();
-		else
-			finish_load();
-		break;
 	case LS_DONE:
 		m_serve.mailbox = m_ls_plan.fuji_claim && !m_ls_plan.claims_5000;
 		poke(FN_R_LOAD_STATE, FN_LOAD_IDLE);
@@ -383,13 +340,12 @@ void nes_fujinet_device::direct_boot(const uint8_t *base, const nesmap_plan_t *p
 	m_ls_plan = *plan;
 	nesmap_init(&m_map, plan);
 	m_map_live = true;
-	m_serve.sram_en = true;
+	m_serve.prg_live = true;
 	m_serve.loading = false;
 	m_prg_we = false;
 	m_mirror = 0xff;
 	apply_map();
 	m_serve.mailbox = plan->fuji_claim && !plan->claims_5000;
-	poke(FN_R_SRAM_STATE, 1);
 	poke(FN_R_MAPPER, uint8_t(plan->mapper));
 	m_ls_state = LS_IDLE;
 }
@@ -520,7 +476,7 @@ uint8_t nes_fujinet_device::read_h(offs_t offset)
 {
 	uint16_t a = uint16_t(0x8000 + offset);
 
-	if (!m_serve.sram_en)
+	if (!m_serve.prg_live)
 	{
 		if (a >= FN_VECTOR_BASE)
 			return m_vectors[a & 0xFF];
@@ -537,7 +493,7 @@ void nes_fujinet_device::write_h(offs_t offset, uint8_t data)
 		return;
 	if (m_serve.loading)
 	{
-		if (m_prg_we && m_serve.sram_en)
+		if (m_prg_we && m_serve.prg_live)
 			m_prg_sram[(uint32_t(m_prg_slot[offset >> 13]) << 13) | (offset & 0x1FFF)] = data;
 		return;
 	}

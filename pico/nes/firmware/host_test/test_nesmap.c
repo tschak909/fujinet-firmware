@@ -343,6 +343,11 @@ static const case_t cases[] = {
     {  71, 16,  0, 0, 0, ref_common_reset,  ref_bf9093_write },
     {  71,  8,  0, 0, 1, ref_common_reset,  ref_bf9093_write },   /* Fire Hawk */
     { 206,  8,  8, 0, 0, ref_dxrom_reset,   ref_dxrom_write },
+    /* sizes that are not a power of two: the modulo path */
+    {   2, 12,  0, 0, 0, ref_common_reset,  ref_uxrom_write },
+    {   3,  2,  3, 0, 0, ref_cnrom_reset,   ref_cnrom_write },
+    {   4, 12, 12, 0, 0, ref_txrom_reset,   ref_txrom_write },
+    {   1, 12,  6, 0, 0, ref_sxrom_reset,   NULL },
 };
 
 static uint8_t hdr[16];
@@ -391,13 +396,32 @@ static void compare(const case_t *c, const ref_t *r, const nesmap_t *m, unsigned
            m->out.mirror, m->out.wram_en, m->out.wram_wp);
 }
 
+/* Rev1 runs the engine twice, PRG slots on RP-A and CHR slots on RP-B. Each
+ * half must agree with a full instance on its own outputs and on the gates. */
+static void compare_split(const case_t *c, const nesmap_t *full, const nesmap_t *pa,
+                          const nesmap_t *pb, unsigned step)
+{
+    int i, bad = 0;
+
+    for (i = 0; i < 4; i++)
+        if (pa->out.prg[i] != full->out.prg[i]) bad = 1;
+    for (i = 0; i < 8; i++)
+        if (pb->out.chr[i] != full->out.chr[i]) bad = 1;
+    if (pa->out.mirror != full->out.mirror || pb->out.mirror != full->out.mirror) bad = 1;
+    if (pa->out.wram_en != full->out.wram_en || pa->out.wram_wp != full->out.wram_wp) bad = 1;
+    if (!bad)
+        return;
+    failures++;
+    printf("FAIL split mapper %d prg%d chr%d step %u\n", c->mapper, c->prg16, c->chr8, step);
+}
+
 static uint32_t rng = 0x2A03C02Au;
 static uint32_t rnd(void) { rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; return rng; }
 
 static void run_case(const case_t *c)
 {
     nesmap_plan_t plan;
-    nesmap_t m;
+    nesmap_t m, ma, mb;
     ref_t r;
     unsigned step;
     uint32_t cycle = 100;
@@ -408,6 +432,10 @@ static void run_case(const case_t *c)
     assert(nesmap_plan(image, 16 + c->prg16 * 16384 + c->chr8 * 8192, &plan) == NESMAP_OK);
     assert(plan.mapper == (unsigned)c->mapper);
     assert(nesmap_init(&m, &plan) == NESMAP_OK);
+    ma = m;
+    mb = m;
+    nesmap_set_outputs(&ma, NESMAP_OUT_PRG);
+    nesmap_set_outputs(&mb, NESMAP_OUT_CHR);
 
     memset(&r, 0, sizeof r);
     r.prg_chunks = c->prg16;
@@ -439,7 +467,10 @@ static void run_case(const case_t *c)
         else if (c->write)
             c->write(&r, a, d);
         nesmap_write(&m, a, d, cycle);
+        nesmap_write(&ma, a, d, cycle);
+        nesmap_write(&mb, a, d, cycle);
         compare(c, &r, &m, step);
+        compare_split(c, &m, &ma, &mb, step);
         if (failures > 5)
             return;
     }

@@ -1,0 +1,47 @@
+; nes_link.pio -- the RP-A -> RP-B link (nes_link.h), both ends.
+
+; RP-A, PIO1 (GPIOBASE 16). OUT base LD0 (8 pins), side-set base LCLK: bit 0
+; LCLK, bit 1 LFRM. A frame is one 32-bit word, four beats, most significant
+; byte first (OSR shifts left); data changes, then LCLK toggles [3] cycles
+; later, so the receiver samples data that has been stable for 4 cycles and
+; stays for 4 more. LFRM is high for the frame and low for at least 4 cycles
+; between frames, so a receiver that lost a beat realigns on the next frame.
+.program nes_link_tx
+.side_set 2
+.wrap_target
+    pull block      side 0b00 [3]
+    out pins, 8     side 0b10 [3]
+    nop             side 0b11 [3]
+    out pins, 8     side 0b11 [3]
+    nop             side 0b10 [3]
+    out pins, 8     side 0b10 [3]
+    nop             side 0b11 [3]
+    out pins, 8     side 0b11 [3]
+    nop             side 0b10 [3]
+.wrap
+
+; RP-B, PIO1 (GPIOBASE 16). IN base LFRM, IN_COUNT 10: pin 0 LFRM, pin 1
+; LCLK, pins 2-9 LD7..LD0 (mirrored). ISR shifts right, autopush at 32, so
+; each frame arrives bit-reversed (nes_link_unmirror). One sample per LCLK
+; edge, one cycle after the edge is seen, as in the bench's receiver.
+.program nes_link_rx
+.wrap_target
+    wait 0 pin 0
+    wait 1 pin 0
+    wait 1 pin 1
+    mov osr, pins
+    out null, 2
+    in osr, 8
+    wait 0 pin 1
+    mov osr, pins
+    out null, 2
+    in osr, 8
+    wait 1 pin 1
+    mov osr, pins
+    out null, 2
+    in osr, 8
+    wait 0 pin 1
+    mov osr, pins
+    out null, 2
+    in osr, 8
+.wrap

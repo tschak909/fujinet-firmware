@@ -1,0 +1,93 @@
+; nes_engine.pio -- RP-A's PRG engine (Rev1): PIO and DMA serve $8000-$FFFF,
+; core1 only handles writes and the cart's own pages ($5000-$5FFF, WRAM).
+; See nes_engine.c. One PIO block, GPIOBASE 0 (the CPU bus is GP0-GP25):
+; SM0 capture, SM1 ROM out, SM2 page out. IRQ 4 is core1's "slot table
+; changing" flag, held from a write's M2 rise until the new slots are in.
+; The `wait gpio 21` lines name M2 (nes_cart.h M2_PIN).
+
+; nes_capture: PRG in RAM. At every M2 rising edge of a read, push two words:
+; the address of the slot pointer for A14:A13 in the 16-byte-aligned slot table
+; (Y holds the table's address >> 4), then A0-A12. A DMA ring turns them into
+; one byte: ch A writes the first into ch B's READ_ADDR_TRIG; ch B copies the
+; slot pointer into ch D's READ_ADDR; ch C ORs the offset in through the
+; register's atomic SET alias (banks are 8K-aligned); ch D reads the byte into
+; nes_rom_out's FIFO and re-arms ch A. Nothing waits for /ROMSEL: the fetch
+; starts at M2 and the decision is made at the far end. A write pushes nothing.
+; IN_BASE 0, IN_COUNT 26; JMP_PIN = R/W; OSR shifts right, ISR left.
+.program nes_capture
+    pull block
+    out y, 32
+.wrap_target
+top:
+    wait 0 gpio 21
+    wait 1 gpio 21
+    wait 0 irq 4
+    jmp pin rd
+    jmp top
+rd:
+    mov osr, pins
+    out x, 13
+    out null, 11
+    mov isr, y
+    in osr, 2
+    in null, 2
+    push
+    in x, 13
+    push
+.wrap
+
+; nes_capture_x: PRG in flash. The four slots are the QMI's address
+; translation windows (ATRANS0-3, which core1 points at the banks), so the
+; address needs no table: push 0x14000000 | A14:A13 << 22 | A12:A0 (Y = 0x14,
+; the uncached XIP alias) and one DMA hop writes it into ch D's
+; READ_ADDR_TRIG. Same pins and shifts as nes_capture.
+.program nes_capture_x
+    pull block
+    out y, 32
+.wrap_target
+top:
+    wait 0 gpio 21
+    mov isr, y
+    wait 1 gpio 21
+    wait 0 irq 4
+    jmp pin rd
+    jmp top
+rd:
+    mov osr, pins
+    out null, 24
+    in osr, 2
+    in null, 9
+    in pins, 13
+    push
+.wrap
+
+; nes_rom_out: one byte per read cycle from the DMA ring. Drive it only if
+; /ROMSEL (JMP_PIN) has gone low, i.e. this is $8000-$FFFF; release when M2
+; falls. OUT base D0, 8 pins (MOV PINDIRS uses the OUT mapping).
+.program nes_rom_out
+.wrap_target
+top:
+    pull block
+    jmp pin top
+    out pins, 8
+    mov pindirs, ~null
+    wait 0 gpio 21
+    mov pindirs, null
+.wrap
+
+; nes_page_out: a byte core1 offers for one of the cart's own pages, pushed as
+; soon as it sees M2, before /ROMSEL has settled. JMP_PIN = /ROMSEL: still
+; high a few cycles later means it was not the ROM alias at $C000-$FFFF, so
+; drive it; low means nes_rom_out has this cycle.
+.program nes_page_out
+.wrap_target
+top:
+    pull block [7]
+    jmp pin drive
+    jmp top
+drive:
+    out pins, 8
+    mov pindirs, ~null
+    wait 0 gpio 21
+    mov pindirs, null
+.wrap

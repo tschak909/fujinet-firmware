@@ -1,25 +1,24 @@
-/* nes_cart.h -- the NES cartridge bus as seen from the RP2354B.
+/* nes_cart.h -- the NES cartridge (Rev1) as seen from RP-A, the RP2354B on
+ * the CPU bus. RP-B, the second RP2354B, owns the PPU bus (nes_ppu.h); the
+ * two talk over the link (nes_link.h).
  *
- * The cart does three jobs on the CPU bus and none on the PPU bus:
+ * RP-A's jobs on the CPU bus:
  *
- *   1. Serve $5000-$5FFF (the mailbox arena + the loader ROM), $6000-$7FFF
- *      (WRAM) and, while SRAM_EN is off, $FF00-$FFFF (the power-on vectors)
- *      out of its own memory. That is the family's 350 ns loop, and it is
- *      the ONLY software in any data path.
- *   2. Watch every write. Mailbox hotspot writes go to core0 through a ring;
- *      mapper register writes are applied inline and patch the PIO bank
- *      tables before the next fetch.
- *   3. Nothing else. PRG and CHR are external SRAMs the console addresses
- *      itself; PPU A10-A12 and CPU A13-A14 feed the PIO tables directly.
+ *   1. Serve PRG $8000-$FFFF: the PIO + DMA engine (nes_engine.h) from RAM or
+ *      flash. Before a game, every slot is the boot bank, whose last page
+ *      holds the cart's vectors.
+ *   2. Serve $5000-$5FFF (the mailbox arena + the loader ROM) and $6000-$7FFF
+ *      (WRAM) from its own memory: core1, beside the engine.
+ *   3. Watch every write. Mapper writes change the engine's slots inline and
+ *      go to RP-B as link frames; mailbox hotspot writes go to core0 through
+ *      a ring.
  *
- * The decode lives here as static inline so core1, the MAME device and the
- * host tests share one implementation (the ColecoVision pattern).
+ * The decode lives here as static inline so the MAME device and the host
+ * tests share one model of it (the ColecoVision pattern); core1's own copy is
+ * nes_engine.c.
  *
- * Timing facts (nesdev "Cartridge connector", not to be re-derived): NTSC M2
- * is high 350 ns and low 209 ns of a 559 ns cycle; the address is guaranteed
- * stable only while M2 is high; write data is valid at M2's falling edge.
  * PROVISIONAL until a scope says otherwise: how long write data holds after
- * M2 falls, hence the last-sample-while-high model below.
+ * M2 falls, hence the last-sample-while-high model.
  */
 #ifndef NES_CART_H
 #define NES_CART_H
@@ -29,48 +28,29 @@
 #include <stddef.h>
 
 #include "fuji_mailbox.h"
+#include "nes_bus.h"
 
 /* --------------------------------------------------------------------------
- * GPIO map: RP2354B, 48 of 48. Everything core1 reads is in GPIO 0-31 so one
- * SIO read covers the bus; everything PIO0/PIO1 touch is in 16-47 (GPIOBASE
- * 16). The RP sits on the 5 V bus directly -- the pads are 5 V-tolerant when
- * powered -- so there are no buffers to sequence.
+ * GPIO map, RP-A (U1, RP2354B), 44 of 48. The CPU bus, GP0-GP25 (nes_bus.h),
+ * is SIO's and PIO0's (GPIOBASE 0); everything PIO1 and PIO2 touch is in
+ * 16-47 (GPIOBASE 16). The RP sits on the 5 V bus directly: its pads are
+ * 5 V-tolerant while powered, and OEOVER keeps D0-D7 off until PWR_OK.
  * -------------------------------------------------------------------------- */
-#define CA0_PIN      0u     /* CPU A0-A12 on GP0-GP12                       */
-#define CD0_PIN      13u    /* CPU D0-D7 on GP13-GP20, bidirectional        */
-#define M2_PIN       21u    /* also PWM slice 2 input B: the cycle counter  */
-#define RW_PIN       22u    /* 1 = the console reads                        */
-#define ROMSEL_PIN   23u    /* /ROMSEL = NAND(M2, A15): low = $8000-$FFFF   */
-#define CA13_PIN     24u    /* CPU A13, A14 on GP24-GP25 (PIO1's index too)  */
-#define PA10_PIN     26u    /* PPU A10-A12 on GP26-GP28 (PIO0's index)      */
-#define SR_SER_PIN   29u    /* 74HCT595 data                                */
-#define SR_SCK_PIN   30u    /* 74HCT595 shift clock                         */
-#define SR_RCK_PIN   31u    /* 74HCT595 latch                               */
-#define IRQ_PIN      32u    /* /IRQ: driven low or released, never high     */
-#define PRG_BANK_PIN 33u    /* PRG SRAM A13-A18 on GP33-GP38 (PIO1)         */
-#define CHR_BANK_PIN 39u    /* CHR SRAM A10-A18 on GP39-GP47 (PIO0)         */
+#define PWROK_PIN     26u   /* console 5 V present: 2.2k/3.3k of CONS_5V     */
+#define LED_PIN       27u   /* low-Vf LED to GND through 330R                */
+                            /* GP28-GP31: spare, test pads                   */
+#define IRQ_PIN       32u   /* /IRQ: driven low or released, never high      */
+#define LACK_PIN      33u   /* RP-B -> RP-A: link acknowledge / ready        */
+#define LD0_PIN       34u   /* link LD0-LD7 on GP34-GP41 (PIO1 out)          */
+#define LCLK_PIN      42u   /* link clock, both edges (PIO1 side-set bit 0)  */
+#define LFRM_PIN      43u   /* link frame (side-set bit 1)                   */
+#define RPB_SWCLK_PIN 44u   /* RP-B's SWD, driven by RP-A (PIO2)             */
+#define RPB_SWDIO_PIN 45u
+#define RPB_RUN_PIN   46u   /* RP-B's RUN: low holds it in reset             */
+#define PA12_PIN      47u   /* PPU A12, for the MMC3 scanline filter (PIO1)  */
 
-#define CA_LO_MASK   0x1FFFu                      /* A0-A12                 */
-#define DATA_MASK    (0xFFu << CD0_PIN)
-#define M2_MASK      (1u << M2_PIN)
-#define RW_MASK      (1u << RW_PIN)
-#define ROMSEL_MASK  (1u << ROMSEL_PIN)
-#define CA13_MASK    (1u << CA13_PIN)
-#define CA14_MASK    (1u << (CA13_PIN + 1))
-#define PA12_MASK    (1u << (PA10_PIN + 2))
-#define SR_MASK      ((1u << SR_SER_PIN) | (1u << SR_SCK_PIN) | (1u << SR_RCK_PIN))
 #define BUS_IN_MASK  (CA_LO_MASK | DATA_MASK | M2_MASK | RW_MASK | ROMSEL_MASK \
-                      | CA13_MASK | CA14_MASK | (7u << PA10_PIN))
-
-/* The '595 bits, Q0 first out of the latch. */
-#define SR_SRAM_EN    0x01  /* PRG SRAM /CE may assert: the image is loaded */
-#define SR_PRG_WE_EN  0x02  /* console writes to $8000+ reach the PRG SRAM  */
-#define SR_CHR_WE_EN  0x04  /* PPU writes reach the CHR SRAM (CHR-RAM)      */
-#define SR_MIR0       0x08  /* CIRAM A10 source, NESMAP_MIR_* bit 0         */
-#define SR_MIR1       0x10  /* ...bit 1                                     */
-#define SR_FOURSCREEN 0x20  /* CIRAM /CE held off (deferred)                */
-#define SR_LED        0x40
-#define SR_SPARE      0x80
+                      | CA13_MASK | CA14_MASK)
 
 /* --------------------------------------------------------------------------
  * The decode.
@@ -127,18 +107,17 @@ static inline nes_region_t nes_region_from_addr(uint16_t a)
     return NES_R_NONE;
 }
 
-/* What core1 answers with. Every pointer is SRAM-resident on the cart. On
- * the cart the instance is volatile: core0 changes one field at a time and
- * core1 reads them every cycle; the pointers are set once at init. */
+/* What the cart answers with, as the MAME device and the host tests model it
+ * (the cart itself: nes_engine.h's page tables and slots). */
 typedef struct {
     const uint8_t *arena;     /* FN_ARENA_SIZE: reply, status, (hotspots), loader */
     uint8_t *wram;            /* NESMAP_WRAM_MAX, or NULL                   */
     uint32_t wram_size;
-    const uint8_t *vectors;   /* 256 bytes served at $FF00 while !sram_en   */
-    bool sram_en;             /* mirrors the '595 bit as core1 believes it  */
+    const uint8_t *vectors;   /* 256 bytes served at $FF00 while !prg_live  */
+    bool prg_live;            /* the game's PRG answers $8000+, not the boot bank */
     bool mailbox;             /* the live image keeps the mailbox           */
     bool wram_en, wram_wp;    /* from the mapper                            */
-    bool loading;             /* the loader owns $8000+: no mapper decode   */
+    bool loading;             /* an install is under way: no mapper decode  */
 } nes_serve_t;
 
 /* The byte the cart drives for a read, or NULL to leave the bus alone. */
@@ -161,7 +140,7 @@ static inline const uint8_t *nes_serve_ptr(const volatile nes_serve_t *s, nes_re
         }
         return NULL;
     case NES_R_ROM:
-        if (!s->sram_en && a >= FN_VECTOR_BASE)
+        if (!s->prg_live && a >= FN_VECTOR_BASE)
             return s->vectors + (a & 0xFF);
         return NULL;
     default:

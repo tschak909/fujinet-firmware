@@ -1,40 +1,48 @@
-/* main.c -- FujiNet NES cartridge firmware, RP2354B.
+/* main.c -- FujiNet NES cartridge firmware (Rev1), RP-A: the RP2354B on the
+ * CPU bus.
  *
- * core1 serves the CPU bus (nes_cart.c); the PIO bank tables serve the SRAMs'
- * high address lines (nes_pio.c); core0's job is the USB CDC link to the
- * ESP32-S3, the mailbox service, the load sequence and the slow mapper
- * outputs on the '595.
+ * core1 and a PIO + DMA engine serve the CPU bus (nes_engine.c); RP-B, the
+ * second RP2354B, serves the PPU bus and takes CHR and the mapper writes
+ * over the link (nes_link_tx.c); core0's job is the USB CDC link to the
+ * ESP32-S3, the mailbox service, the installs and console power.
  *
  * The RP sits on the console's 5 V bus with no buffers: RP2350 pads are
  * 5 V-tolerant while powered, and the cart is powered from the console or
- * USB, whichever is up. Pull-downs stay off on every bus pin (RP2350-E9).
+ * USB, whichever is up. Pull-downs stay off on every bus pin (RP2350-E9);
+ * D0-D7 and /IRQ are held off (OEOVER) until PWR_OK (fuji_cart.c).
  */
 
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
 #include "hardware/clocks.h"
 #include "hardware/gpio.h"
+#include "hardware/vreg.h"
 #include "tusb.h"
 
 #include "nes_cart.h"
-#include "nes_pio.h"
 #include "nes_irq.h"
+#include "nes_link_tx.h"
+#include "nes_qmi.h"
+#include "rpb_swd.h"
 #include "fujiboot.h"
 #include "fujinet.h"
 #include "fuji_cart.h"
 #include "fuji_store.h"
 
+volatile rpb_err_t fuji_rpb_err;                /* for the diagnostics page */
+
 int main(void)
 {
-    /* 200 MHz at the stock core voltage, the clock the astrocade RP2354
-     * board ships on. The bus loop needs well under 100 ns of the 350 ns
-     * M2-high window at this rate. */
-    set_sys_clock_khz(200000, true);
+    /* 266 MHz at 1.20 V: the engine's flash path needs SCK at 133 MHz
+     * (clk_sys / 2, the flash's limit) and core1 every cycle of M2 low.
+     * Phase 0 measured it there (pico/nes/bench). */
+    vreg_set_voltage(VREG_VOLTAGE_1_20);
+    busy_wait_us(2000);
+    set_sys_clock_khz(266000, true);
+    nes_qmi_init();
 
-    gpio_init_mask(BUS_IN_MASK | SR_MASK);
+    gpio_init_mask(BUS_IN_MASK);
     gpio_set_dir_in_masked(BUS_IN_MASK);
-    gpio_set_dir_out_masked(SR_MASK);
-    gpio_clr_mask(SR_MASK);
     for (unsigned pin = 0; pin < 32; pin++)
         if (BUS_IN_MASK & (1u << pin))
             gpio_disable_pulls(pin);
@@ -46,10 +54,13 @@ int main(void)
     gpio_disable_pulls(IRQ_PIN);
     gpio_set_dir(IRQ_PIN, false);
 
-    nes_pio_init();
+    nes_link_tx_init();
     nes_irq_init();
-    fuji_config_boot();
+    fuji_config_boot();                         /* the engine on the boot bank */
     multicore_launch_core1(nes_core1_main);
+    /* RP-B after the bus is served: the console may already be fetching
+     * its vectors. The first install waits for RP-B's LACK. */
+    fuji_rpb_err = rpb_boot();
 
     tusb_init();
     for (;;) {

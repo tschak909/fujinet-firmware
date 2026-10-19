@@ -68,7 +68,6 @@ private:
 	void apply_map();
 	void apply_mirroring();
 	void begin_load(const uint8_t *base, const nesmap_plan_t *plan);
-	void publish_slice();
 	void slice_acked();
 	void finish_load();
 	void direct_boot(const uint8_t *base, const nesmap_plan_t *plan);
@@ -101,12 +100,8 @@ private:
 	uint8_t m_mirror = NESMAP_MIR_V;
 
 	// the load sequence (fuji_cart.c)
-	enum { LS_IDLE, LS_RUN, LS_DONE } m_ls_state = LS_IDLE;
-	const uint8_t *m_ls_base = nullptr;
+	enum { LS_IDLE, LS_DONE } m_ls_state = LS_IDLE;
 	nesmap_plan_t m_ls_plan{};
-	uint32_t m_ls_slice = 0, m_ls_nprg = 0, m_ls_nchr = 0;
-	uint8_t m_ls_seq = 0;
-	bool m_ls_ack_pending = false;
 
 	std::deque<nes_event_t> m_events;
 	uint8_t m_diag_rmw = 0;

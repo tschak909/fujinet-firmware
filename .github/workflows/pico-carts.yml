@@ -137,8 +137,9 @@ jobs:
 
       # The NES port keeps every hardware-free unit under one Makefile: the
       # FujiBus codec, the mapper engine against MAME handler transcriptions,
-      # the bus decode and RMW signature, the PIO bank-table model, and the
-      # mailbox service on the 4K arena.
+      # its fast PRG/CHR halves (Rev1's RP-A and RP-B), the RP-A -> RP-B link
+      # end to end, the bus decode and RMW signature, and the mailbox service
+      # on the 4K arena.
       - name: NES -- host tests
         working-directory: pico/nes/firmware/host_test
         run: make
@@ -584,10 +585,13 @@ jobs:
           PICO_SDK_PATH: ${{ github.workspace }}/pico-sdk
         run: ./build-cart.sh --baked
 
-      # build-cart.sh bakes the loader ROM and a client into the firmware, so
-      # the 6502 side assembles first. The RP2354B build runs entirely from
-      # SRAM (copy_to_ram); tools/checksram.py asserts core1's symbols there.
-      - name: NES cartridge (fujines_rp2354b)
+      # build-cart.sh builds RP-B (ppu/, which RP-A loads over SWD), bakes
+      # the loader ROM, a client and RP-B's image into RP-A's firmware, so the
+      # 6502 side assembles first. RP-A runs entirely from SRAM (copy_to_ram);
+      # tools/checksram.py asserts core1's symbols there and that only
+      # install-time data stays in flash. The Phase 0 bench (a Pico 2 build)
+      # runs the same engine source, so it must keep building too.
+      - name: NES cartridge (fujines_rp2354b) + Rev1 bench
         working-directory: pico/nes
         env:
           PICO_SDK_PATH: ${{ github.workspace }}/pico-sdk
@@ -595,6 +599,7 @@ jobs:
           sudo apt-get install -y cc65
           ./build.sh loader hello fujitest fujiboot
           ./build-cart.sh
+          (cd bench && ./build.sh)
 
       # The resident CONFIG and the loader page come from firmware/baked/
       # (z88dk is not on the runners); tools/checksram.py asserts core1's

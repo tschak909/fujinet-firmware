@@ -1,86 +1,77 @@
-/* fuji_cart.c -- core0's half of the cartridge: the ring drain, the '595,
- * the load sequence and the console-power watchdog.
+/* fuji_cart.c -- core0's half of the cartridge (Rev1): the ring drain, the
+ * install sequence, console power and the watchdog.
+ *
+ * Before a game, and whenever the console comes back on, the engine serves
+ * the BOOT BANK in all four PRG slots: an 8K-aligned bank whose second half
+ * is the mailbox arena, so its last page -- $FF00-$FFFF -- is the loader
+ * ROM's last page, which carries the cart's vectors (RESET $5800, NMI and IRQ
+ * on the RTI at $5803). The console starts in the loader, asks, and core0
+ * installs the image under it: CHR to RP-B over the link, the engine's banks
+ * pointed at the store. The loader never copies anything; it sees LOAD_DONE,
+ * acknowledges, and jumps through $FFFC into the game.
  */
 
 #include <string.h>
 
 #include "pico/stdlib.h"
+#include "pico/multicore.h"
+#include "hardware/clocks.h"
 #include "hardware/gpio.h"
 #include "hardware/sync.h"
-#include "hardware/structs/sio.h"
+#include "hardware/structs/io_bank0.h"
 
 #include "fuji_cart.h"
 #include "fuji_mailbox.h"
 #include "fujimail.h"
-#include "nes_pio.h"
+#include "nes_engine.h"
 #include "nes_irq.h"
+#include "nes_link.h"
+#include "nes_link_tx.h"
+
+extern nes_engine_t nes_eng;                   /* nes_cart.c */
 
 fuji_ring_t fuji_ring;
-uint8_t fuji_arena[FN_ARENA_SIZE];
-uint8_t fuji_wram[NESMAP_WRAM_MAX];
-uint8_t fuji_vectors[256];
+/* One 8K bank, as Rev0: the engine serves an 8K window (banked boards later). */
+uint8_t fuji_wram[FN_WRAM_SIZE];
 volatile nes_serve_t fuji_serve;
 nesmap_t fuji_map;
-volatile uint32_t fuji_bus_cycle;
 volatile bool fuji_boot_armed;
 volatile bool fuji_have_staged;
-volatile uint8_t fuji_slow_dirty;
 
-static const uint8_t *resident_base;
+/* The boot bank: [scratch 4K][arena 4K], 8K-aligned (see the top). */
+static struct {
+    uint8_t scratch[8192 - FN_ARENA_SIZE];
+    uint8_t arena[FN_ARENA_SIZE];
+} boot_bank __attribute__((aligned(8192)));
+_Static_assert(FN_ARENA_SIZE == 4096, "the boot bank is half arena");
+
+uint8_t *const fuji_arena = boot_bank.arena;
+uint8_t *const fuji_scratch4k = boot_bank.scratch;
+
+/* The engine's bank table (one entry per 8K PRG bank) and MMC1 rows. */
+static const uint8_t *bank_ptr[NESMAP_PRG_MAX / 8192];
+static const uint8_t *mmc1_rows[FASTPRG_MMC1_ROWS][4];
+
+static fuji_image_t resident_img;
 static nesmap_plan_t resident_plan;
-static const uint8_t *staged_base;
+static fuji_image_t staged_img;
 static nesmap_plan_t staged_plan;
-static uint8_t sr_shadow;
+static const uint8_t *live_body;               /* the store the engine serves */
 static uint8_t diag_rmw;
 
 /* The load in progress. */
-static enum { LS_IDLE, LS_RUN, LS_DONE } ls_state;
-static const uint8_t *ls_base;
+static enum { LS_IDLE, LS_REQ, LS_DONE } ls_state;
+static fuji_image_t ls_img;
 static nesmap_plan_t ls_plan;
-static uint32_t ls_slice, ls_nprg, ls_nchr;   /* 1K units */
-static uint8_t ls_seq;
-static bool ls_ack_pending;
-static bool ls_autoload;                      /* boot the resident image when the console runs */
+static bool ls_autoload;                       /* boot the resident image when the console runs */
 
-/* Console power: M2 stops, the SRAMs' contents are gone, CONFIG must reload. */
+/* Console power: M2 stops, CONFIG must come back. */
 static uint32_t wd_last_cycle;
 static absolute_time_t wd_last_change;
 static bool console_alive;
+static bool pwrok_seen;
 
-/* ---------------- the '595 and the IRQ line ---------------- */
-
-static inline void sr_delay(void)
-{
-    for (int i = 0; i < 12; i++)               /* ~60 ns at 200 MHz; HCT needs 20 */
-        __asm volatile("nop");
-}
-
-void fuji_cart_sr_write(uint8_t bits)
-{
-    unsigned i;
-
-    sr_shadow = bits;
-    for (i = 0; i < 8; i++) {                  /* Q7 first, so Q0 = bit 0 */
-        if (bits & 0x80)
-            sio_hw->gpio_set = 1u << SR_SER_PIN;
-        else
-            sio_hw->gpio_clr = 1u << SR_SER_PIN;
-        sr_delay();
-        sio_hw->gpio_set = 1u << SR_SCK_PIN;
-        sr_delay();
-        sio_hw->gpio_clr = 1u << SR_SCK_PIN;
-        bits <<= 1;
-    }
-    sio_hw->gpio_set = 1u << SR_RCK_PIN;
-    sr_delay();
-    sio_hw->gpio_clr = 1u << SR_RCK_PIN;
-    fuji_cart_poke(FN_R_SRAM_STATE, (sr_shadow & SR_SRAM_EN) ? 1 : 0);
-}
-
-static void sr_update(uint8_t clear, uint8_t set)
-{
-    fuji_cart_sr_write((uint8_t)((sr_shadow & ~clear) | set));
-}
+/* ---------------- the IRQ line, the LED, the bus gate ---------------- */
 
 void fuji_cart_set_irq(bool asserted)
 {
@@ -92,7 +83,25 @@ void fuji_cart_set_irq(bool asserted)
     }
 }
 
+/* D0-D7 and /IRQ may drive only while the console is powered: with only USB
+ * up, driving them would feed the console through its own pins. OEOVER
+ * holds the output enables off whatever PIO or SIO asks. */
+static void bus_gate(bool on)
+{
+    unsigned p;
+    uint32_t v = on ? GPIO_OVERRIDE_NORMAL : GPIO_OVERRIDE_LOW;
+
+    for (p = CD0_PIN; p < CD0_PIN + 8; p++)
+        gpio_set_oeover(p, v);
+    gpio_set_oeover(IRQ_PIN, v);
+}
+
 /* ---------------- the ring ---------------- */
+
+uint32_t fuji_cart_bus_cycle(void)
+{
+    return nes_eng.cycle;
+}
 
 /* Only an event at least two bus cycles old is handed out, so that the write
  * of the cycle after it -- an RMW's real write -- is already in the ring and
@@ -109,7 +118,7 @@ bool fuji_cart_next_event(nes_event_t *ev)
     e.data = fuji_ring.buf[tail].data;
     e.kind = fuji_ring.buf[tail].kind;
     e.cycle = fuji_ring.buf[tail].cycle;
-    if ((int32_t)(fuji_bus_cycle - e.cycle) < 2 && console_alive)
+    if ((int32_t)(fuji_cart_bus_cycle() - e.cycle) < 2 && console_alive)
         return false;
     fuji_ring.tail = (uint16_t)((tail + 1u) % FUJI_RING_LEN);
 
@@ -136,177 +145,178 @@ void fuji_cart_poke(unsigned offset, uint8_t value)
         fuji_arena[offset] = value;
 }
 
-/* ---------------- the mapper's slow outputs ---------------- */
+/* ---------------- the engine ---------------- */
 
-static void apply_gates(void)
+/* core1 to the parked loop (its own pages and mailbox writes only), or
+ * back. core1 notices between bus cycles, so this needs the console
+ * running; with it off, core1 is reset instead (see console_off). */
+static void park(bool on)
 {
-    uint8_t set = 0, clear = 0;
-    const nesmap_out_t *o = &fuji_map.out;
-
-    if (o->mirror & 1) set |= SR_MIR0; else clear |= SR_MIR0;
-    if (o->mirror & 2) set |= SR_MIR1; else clear |= SR_MIR1;
-    if (o->mirror == NESMAP_MIR_4) set |= SR_FOURSCREEN; else clear |= SR_FOURSCREEN;
-    if (o->chr_wp) clear |= SR_CHR_WE_EN; else set |= SR_CHR_WE_EN;
-    fuji_serve.wram_en = o->wram_en;
-    fuji_serve.wram_wp = o->wram_wp;
-    if (((sr_shadow & ~clear) | set) != sr_shadow)
-        sr_update(clear, set);
+    nes_eng.park = on;
+    while (nes_eng.parked != on)
+        tight_loop_contents();
 }
 
-static void apply_tables(void)
+/* All four slots on the boot bank, no mapper: the power-on state. core1
+ * must not be running (not launched yet, or reset). */
+static void engine_boot(void)
 {
+    fastprg_t *fp = &nes_eng.fp;
     unsigned i;
 
-    for (i = 0; i < NESMAP_PRG_SLOTS; i++)
-        nes_pio_patch_prg(i, fuji_map.out.prg[i]);
-    for (i = 0; i < NESMAP_CHR_SLOTS; i++)
-        nes_pio_patch_chr(i, fuji_map.out.chr[i]);
+    nes_engine_stop(&nes_eng);
+    memset(fp, 0, sizeof *fp);
+    fp->slot = fp->slot_mem;
+    for (i = 0; i < 4; i++)
+        fp->slot_mem[i] = (const uint8_t *)&boot_bank;
+    nes_eng.atrans = false;
+    nes_eng.mailbox = true;
+    nes_engine_pages(&nes_eng);
+    nes_engine_start(&nes_eng);
+    live_body = NULL;
+    fuji_serve.prg_live = false;
+    fuji_serve.mailbox = true;
+    nes_eng.park = 0;
+    nes_eng.parked = 0;
+}
+
+/* The engine for an image (core1 parked): its banks, the tier's path. */
+static bool engine_image(const fuji_image_t *img, const nesmap_plan_t *plan)
+{
+    fastprg_t *fp = &nes_eng.fp;
+    uint32_t b, n = plan->prg_size / 8192;
+
+    nes_engine_stop(&nes_eng);
+    for (b = 0; b < n; b++)
+        bank_ptr[b] = img->flash_off ? nes_engine_atrans_bank(img->flash_off + b * 8192)
+                                     : img->body + b * 8192;
+    if (nesmap_init(&fuji_map, plan) != NESMAP_OK)
+        return false;
+    if (!fastprg_init_tab(fp, &fuji_map, bank_ptr, mmc1_rows))
+        return false;
+    nes_eng.atrans = img->flash_off != 0;
+    nes_engine_pages(&nes_eng);                /* WRAM in or out per the gate */
+    nes_engine_start(&nes_eng);
+    live_body = img->body;
+    return true;
 }
 
 /* ---------------- staging ---------------- */
 
-void fuji_cart_set_resident(const uint8_t *image, const nesmap_plan_t *plan)
+void fuji_cart_set_resident(const fuji_image_t *image, const nesmap_plan_t *plan)
 {
-    resident_base = image;
+    resident_img = *image;
     resident_plan = *plan;
 }
 
-void fuji_cart_stage(const uint8_t *image, const nesmap_plan_t *plan)
+void fuji_cart_stage(const fuji_image_t *image, const nesmap_plan_t *plan)
 {
-    staged_base = image;
+    staged_img = *image;
     staged_plan = *plan;
     fuji_have_staged = true;
 }
 
-bool fuji_cart_store_busy(const uint8_t *base)
+bool fuji_cart_store_busy(const uint8_t *body)
 {
-    if (fuji_have_staged && base == staged_base)
+    if (fuji_have_staged && body == staged_img.body)
         return true;
-    if (ls_state != LS_IDLE && base == ls_base)
+    if (ls_state != LS_IDLE && body == ls_img.body)
         return true;
-    return false;
+    return body == live_body;
 }
 
-/* ---------------- the load sequence ---------------- */
+/* ---------------- the install ---------------- */
 
-static void publish_slice(void)
+static void load_fail(void)
 {
-    const uint8_t *src;
-    unsigned dst, off;
-
-    if (ls_slice < ls_nprg) {
-        unsigned bank8 = ls_slice / 8;
-        nes_pio_patch_prg(0, bank8);           /* $8000-$9FFF -> this 8K   */
-        src = ls_base + nesmap_prg_offset(&ls_plan) + ls_slice * 1024;
-        dst = FN_LOAD_DST_PRG;
-        off = ls_slice % 8;
-    } else {
-        unsigned k = (unsigned)(ls_slice - ls_nprg);
-        unsigned w = k / 8, i;
-        if (k == 0)                            /* first CHR slice: open the gate */
-            sr_update(0, SR_CHR_WE_EN);
-        for (i = 0; i < NESMAP_CHR_SLOTS; i++)
-            nes_pio_patch_chr(i, w * 8 + i);   /* PPU $0000-$1FFF -> this 8K */
-        src = ls_base + nesmap_chr_offset(&ls_plan) + k * 1024;
-        dst = FN_LOAD_DST_CHR;
-        off = k % 8;
-    }
-    memcpy(fuji_arena + FN_R_DATA, src, FN_R_SLICE_LEN);
-    fuji_cart_poke(FN_R_LOAD_DST, (uint8_t)dst);
-    fuji_cart_poke(FN_R_LOAD_OFF, (uint8_t)off);
-    fuji_cart_poke(FN_R_LOAD_PCT, (uint8_t)((ls_slice * 100u) / (ls_nprg + ls_nchr)));
-    ls_seq = (uint8_t)(ls_seq == 255 ? 1 : ls_seq + 1);
-    __dmb();
-    fuji_cart_poke(FN_R_LOAD_SEQ, ls_seq);     /* published LAST */
-    fuji_cart_poke(FN_R_LOAD_STATE, FN_LOAD_SLICE);
-    ls_ack_pending = true;
+    fuji_cart_poke(FN_R_LOAD_STATE, FN_LOAD_FAILED);
+    ls_state = LS_IDLE;
 }
 
-static void begin_load(const uint8_t *base, const nesmap_plan_t *plan)
+/* The console is in the loader, polling LOAD_STATE out of the arena. */
+static void install(const fuji_image_t *img, const nesmap_plan_t *plan)
 {
-    ls_base = base;
+    const uint8_t *chr = !plan->chr_size ? NULL : img->chr ? img->chr : img->body + plan->prg_size;
+
+    ls_img = *img;
     ls_plan = *plan;
-    ls_nprg = plan->prg_size / 1024;
-    ls_nchr = plan->chr_size / 1024;
-    ls_slice = 0;
-    ls_ack_pending = false;
-    ls_state = LS_RUN;
+    ls_state = LS_REQ;
     fuji_have_staged = false;
     fuji_boot_armed = false;
-
-    /* Order matters: core1 stops serving the vector page BEFORE the '595
-     * enables the SRAM, so two drivers never meet on D0-D7. The loader
-     * polls FN_R_SRAM_STATE, painted by the '595 write, before its first
-     * SRAM store. */
     fuji_serve.loading = true;
-    fuji_serve.mailbox = true;
-    fuji_serve.sram_en = true;
-    __dmb();
     fuji_cart_set_irq(false);
     nes_irq_enable(false);
-    sr_update(SR_CHR_WE_EN, SR_SRAM_EN | SR_PRG_WE_EN);
     fuji_cart_poke(FN_R_BOOT_STATE, FN_BOOT_IDLE);
-    publish_slice();
-}
+    fuji_cart_poke(FN_R_LOAD_PCT, 0);
+    fuji_cart_poke(FN_R_LOAD_STATE, FN_LOAD_IDLE);
 
-static void finish_load(void)
-{
-    nesmap_init(&fuji_map, &ls_plan);
-    apply_tables();
-    apply_gates();
-    sr_update(SR_PRG_WE_EN, SR_LED);
+    park(true);
+    /* CHR first: RP-B reads from the store while the engine still serves
+     * the boot bank (identity flash windows). */
+    if (!nes_link_send_image(img->hdr, chr, plan->chr_size)) {
+        park(false);
+        load_fail();
+        return;
+    }
+    if (!engine_image(img, plan)) {
+        /* Not an image fastprg can serve: back to the boot bank's slots,
+         * the loader still running from the arena. */
+        nes_eng.fp.mapper = 0;
+        nes_eng.fp.slot = nes_eng.fp.slot_mem;
+        for (unsigned i = 0; i < 4; i++)
+            nes_eng.fp.slot_mem[i] = (const uint8_t *)&boot_bank;
+        nes_eng.atrans = false;
+        nes_engine_start(&nes_eng);
+        park(false);
+        load_fail();
+        return;
+    }
+    nes_link_send(NES_LINK_MODE(NES_LINK_MODE_SERVE));
+    fuji_serve.prg_live = true;
     fuji_serve.loading = false;
+    park(false);
     nes_irq_enable(fuji_map.desc->irq == NESMAP_IRQ_A12);
+    gpio_put(LED_PIN, 1);
 
     /* The mailbox stays live only for an image that claims it. It is not
      * switched off here: the loader still has to read FN_LOAD_DONE, and it
      * says goodbye with one more SLICE_ACK. */
-    if (ls_plan.fuji_claim && !ls_plan.claims_5000)
+    if (plan->fuji_claim && !plan->claims_5000)
         fujimail_paint();                      /* ACKSEQ restarts for the new client */
-    fuji_cart_poke(FN_R_MAPPER, (uint8_t)ls_plan.mapper);
+    fuji_cart_poke(FN_R_MAPPER, (uint8_t)plan->mapper);
+    fuji_cart_poke(FN_R_LOAD_PCT, 100);
     fuji_cart_poke(FN_R_LOAD_STATE, FN_LOAD_DONE);
     ls_state = LS_DONE;
 }
 
 /* The loader's request. A client armed a staged image with BOOTLOCK, or --
  * at power-on and after a console power-cycle -- the loader was entered
- * through the cart-served vectors and the resident CONFIG is what it gets.
- * Nothing enables the SRAM before this request: the 6502 must have fetched
- * its reset vector from the cart first. */
+ * through the boot bank's vectors and the resident CONFIG is what it gets. */
 void fuji_cart_request_load(void)
 {
     if (ls_state != LS_IDLE)
         return;
     if (fuji_boot_armed && fuji_have_staged)
-        begin_load(staged_base, &staged_plan);
-    else if (ls_autoload && resident_base) {
+        install(&staged_img, &staged_plan);
+    else if (ls_autoload && resident_img.body) {
         ls_autoload = false;
-        begin_load(resident_base, &resident_plan);
+        install(&resident_img, &resident_plan);
     }
 }
 
 void fuji_cart_slice_acked(void)
 {
-    switch (ls_state) {
-    case LS_RUN:
-        if (!ls_ack_pending)
-            return;
-        ls_ack_pending = false;
-        ls_slice++;
-        if (ls_slice < ls_nprg + ls_nchr)
-            publish_slice();
-        else
-            finish_load();
-        break;
-    case LS_DONE:
-        /* The loader is about to JMP ($FFFC). */
-        fuji_serve.mailbox = ls_plan.fuji_claim && !ls_plan.claims_5000;
-        fuji_cart_poke(FN_R_LOAD_STATE, FN_LOAD_IDLE);
-        ls_state = LS_IDLE;
-        break;
-    default:
-        break;
+    if (ls_state != LS_DONE)
+        return;
+    /* The loader is about to JMP ($FFFC). Its last read of the arena is
+     * done, so the mailbox pages can go now. */
+    fuji_serve.mailbox = ls_plan.fuji_claim && !ls_plan.claims_5000;
+    if (!fuji_serve.mailbox) {
+        nes_eng.mailbox = false;
+        nes_engine_pages(&nes_eng);            /* word stores: safe live */
     }
+    fuji_cart_poke(FN_R_LOAD_STATE, FN_LOAD_IDLE);
+    ls_state = LS_IDLE;
 }
 
 /* ---------------- console power ---------------- */
@@ -315,14 +325,17 @@ static void console_off(void)
 {
     console_alive = false;
     ls_state = LS_IDLE;
-    ls_ack_pending = false;
     fuji_serve.loading = false;
-    fuji_serve.sram_en = false;
-    fuji_serve.mailbox = true;
-    __dmb();
     fuji_cart_set_irq(false);
     nes_irq_enable(false);
-    sr_update(SR_SRAM_EN | SR_PRG_WE_EN | SR_CHR_WE_EN | SR_LED, 0);
+    if (nes_link_rpb_ready())
+        nes_link_send(NES_LINK_MODE(NES_LINK_MODE_OFF));
+    /* core1 is waiting for an M2 edge that will not come: reset it, put the
+     * vectors back for next time, and start it again. */
+    multicore_reset_core1();
+    engine_boot();
+    multicore_launch_core1(nes_core1_main);
+    gpio_put(LED_PIN, 0);
     ls_autoload = true;                        /* CONFIG again when it comes back */
 }
 
@@ -336,43 +349,66 @@ static void console_on(void)
 void fuji_cart_init(const uint8_t *loader_rom, unsigned loader_len)
 {
     memset((void *)&fuji_ring, 0, sizeof fuji_ring);
-    memset(fuji_arena, 0, sizeof fuji_arena);
+    memset(&boot_bank, 0, sizeof boot_bank);
     memset(fuji_wram, 0, sizeof fuji_wram);
-    memset(fuji_vectors, 0, sizeof fuji_vectors);
     if (loader_len > FN_LOADER_SIZE)
         loader_len = FN_LOADER_SIZE;
     memcpy(fuji_arena + FN_LOADER, loader_rom, loader_len);
 
-    /* The vector page the cart serves at power-on: RESET into the loader,
-     * NMI and IRQ onto the RTI at its third byte (loader.s keeps them there). */
-    fuji_vectors[0xFA] = 0x03; fuji_vectors[0xFB] = 0x58;
-    fuji_vectors[0xFC] = 0x00; fuji_vectors[0xFD] = 0x58;
-    fuji_vectors[0xFE] = 0x03; fuji_vectors[0xFF] = 0x58;
+    /* The vectors, at the loader's last six bytes ($5FFA-$5FFF), which the
+     * boot bank serves at $FFFA-$FFFF: RESET into the loader, NMI and IRQ
+     * onto the RTI at its third byte (loader.s keeps them there). */
+    fuji_arena[FN_ARENA_SIZE - 6] = 0x03; fuji_arena[FN_ARENA_SIZE - 5] = 0x58;
+    fuji_arena[FN_ARENA_SIZE - 4] = 0x00; fuji_arena[FN_ARENA_SIZE - 3] = 0x58;
+    fuji_arena[FN_ARENA_SIZE - 2] = 0x03; fuji_arena[FN_ARENA_SIZE - 1] = 0x58;
 
     fuji_serve.arena = fuji_arena;
     fuji_serve.wram = fuji_wram;
-    fuji_serve.wram_size = NESMAP_WRAM_MAX;
-    fuji_serve.vectors = fuji_vectors;
-    fuji_serve.sram_en = false;
+    fuji_serve.wram_size = FN_WRAM_SIZE;
+    fuji_serve.vectors = fuji_arena + FN_ARENA_SIZE - 256;
+    fuji_serve.prg_live = false;
     fuji_serve.mailbox = true;
     fuji_serve.wram_en = false;
     fuji_serve.wram_wp = false;
     fuji_serve.loading = false;
     fuji_boot_armed = false;
     fuji_have_staged = false;
-    fuji_slow_dirty = 0;
     ls_state = LS_IDLE;
     ls_autoload = true;
     console_alive = false;
     wd_last_cycle = 0;
     wd_last_change = get_absolute_time();
-    fuji_cart_sr_write(0);
+
+    gpio_init(LED_PIN);
+    gpio_set_dir(LED_PIN, true);
+    gpio_put(LED_PIN, 0);
+    gpio_init(PWROK_PIN);
+    gpio_set_dir(PWROK_PIN, false);
+    gpio_disable_pulls(PWROK_PIN);
+    pwrok_seen = false;
+    bus_gate(false);
+
+    nes_eng.wram = fuji_wram;
+    nes_eng.arena = fuji_arena;
+    nes_eng.romsel_settle = (uint32_t)(40ull * clock_get_hz(clk_sys) / 1000000000ull) + 1;
+    nes_eng.adjacent = (uint32_t)(838ull * clock_get_hz(clk_sys) / 1000000000ull);
+    nes_eng.link_txf = nes_link_tx_fifo();
+    nes_eng.pio = pio0;
+    nes_engine_init(&nes_eng);
+    engine_boot();                             /* core1 launches after this */
 }
 
 void fuji_cart_service(void)
 {
-    uint32_t cyc = fuji_bus_cycle;
+    uint32_t cyc = fuji_cart_bus_cycle();
     absolute_time_t now = get_absolute_time();
+    bool pwrok = gpio_get(PWROK_PIN);
+
+    /* The bus gate follows the console's 5 V. */
+    if (pwrok != pwrok_seen) {
+        pwrok_seen = pwrok;
+        bus_gate(pwrok);
+    }
 
     /* The watchdog: M2 has stopped for 250 ms means the console is off. */
     if (cyc != wd_last_cycle) {
@@ -383,10 +419,5 @@ void fuji_cart_service(void)
     } else if (console_alive
                && absolute_time_diff_us(wd_last_change, now) > 250000) {
         console_off();
-    }
-
-    if (fuji_slow_dirty) {
-        fuji_slow_dirty = 0;                   /* clear first, then apply the latest */
-        apply_gates();
     }
 }

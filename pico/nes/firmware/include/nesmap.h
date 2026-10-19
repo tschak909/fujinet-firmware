@@ -88,7 +88,16 @@ typedef struct nesmap {
     bool     irq_reload, irq_enable, irq_line;
     nesmap_out_t out;
     uint8_t  dirty;               /* NESMAP_DIRTY_*                       */
+    uint8_t  outputs;             /* NESMAP_OUT_*: which slots to compute */
 } nesmap_t;
+
+/* Which slot tables an instance keeps. Rev1 splits the cart in two: RP-A
+ * serves PRG and needs only the PRG slots, RP-B serves CHR and needs only
+ * the CHR slots, and both run the same writes. Mirroring and the WRAM gates
+ * are always computed. nesmap_init sets NESMAP_OUT_ALL. */
+#define NESMAP_OUT_PRG    0x01
+#define NESMAP_OUT_CHR    0x02
+#define NESMAP_OUT_ALL    0x03
 
 #define NESMAP_DIRTY_PRG  0x01
 #define NESMAP_DIRTY_CHR  0x02
@@ -115,12 +124,20 @@ uint8_t nesmap_gate(uint32_t size);
 
 /* Parse the header and locate the claim. `size` is the whole file. */
 nesmap_err_t nesmap_plan(const uint8_t *image, uint32_t size, nesmap_plan_t *plan);
+/* The same for an image stored as its 16-byte header and, elsewhere, its
+ * body (PRG then CHR); `size` counts both. A NULL body (RP-B, which never
+ * sees PRG) skips the FujiNet claim check. */
+nesmap_err_t nesmap_plan_split(const uint8_t *header, const uint8_t *body, uint32_t size,
+                               nesmap_plan_t *plan);
 
 const nesmap_desc_t *nesmap_find(uint16_t mapper);
 
 /* Bind a plan to its handler and put the mapper in its power-on state. */
 nesmap_err_t nesmap_init(nesmap_t *m, const nesmap_plan_t *plan);
 void nesmap_reset(nesmap_t *m);
+
+/* Keep only these slot tables up to date from now on (NESMAP_OUT_*). */
+void nesmap_set_outputs(nesmap_t *m, uint8_t outputs);
 
 /* One console write. `cycle` counts M2 rising edges; it exists for MMC1's
  * consecutive-write rule, which needs the cart's clock rather than the

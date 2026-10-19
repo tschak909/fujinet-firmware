@@ -1,0 +1,250 @@
+; bench.pio -- the Rev1 timing bench: a console on PIO, a logic analyser on
+; PIO, and the two candidate PIO programs the Rev1 cart itself would run.
+;
+; Every stimulus program reads one 32-bit word per bus phase, OSR shifting
+; LEFT: the top bits are a delay count, the rest is the pin image. `out pins`
+; covers the device-under-test's data pins too, but those belong to SIO, so
+; the PIO's copy of them never reaches a pad.
+
+; ---------------------------------------------------------------------------
+; The 2A03 side. OUT/SET base 0: A0-A12 on 0-12, M2 on 21, R/W on 22,
+; /ROMSEL on 23, A13-A14 on 24-25 (bits 13-20 are the DUT's D0-D7 and are
+; ignored). SET base 21, count 1: M2. Y = the rest of M2-high, loaded once.
+;   W0 = low count << 26 | image (M2 0, /ROMSEL 1)     M2 falls, next address
+;   W1 = lag count << 26 | image (M2 1, /ROMSEL = !A15) /ROMSEL settles
+; M2 low  = 2 * low + 5 cycles
+; M2 high = 2 * (lag + Y) + 10 cycles, /ROMSEL 2 * lag + 4 cycles after M2
+; IRQ 0 marks the M2 rising edge for the capture machine.
+.program cpu_console
+    pull block
+    out y, 32
+.wrap_target
+    pull block
+    out x, 6
+    out pins, 26
+low:
+    jmp x-- low [1]
+    pull block
+    out x, 6
+    set pins, 1
+    irq set 0
+lag:
+    jmp x-- lag [1]
+    out pins, 26
+    mov x, y
+high:
+    jmp x-- high [1]
+.wrap
+
+; ---------------------------------------------------------------------------
+; The 2C02 side. OUT base 0, 24 pins: PA0-PA13 on 0-13, PD0-PD7 on 14-21
+; (only reaches the pads in the write test, when PIO owns them), /RD on 22,
+; /WR on 23. One access is two words, one per dot:
+;   W0 = count << 24 | image (/RD, /WR high)   address phase; IRQ 1
+;   W1 = count << 24 | image (/RD or /WR low)  data phase;    IRQ 0
+; Each phase lasts 2 * count + 6 cycles.
+.program ppu_console
+.wrap_target
+    pull block
+    out x, 8
+    out pins, 24
+    irq set 1
+d1:
+    jmp x-- d1 [1]
+    pull block
+    out x, 8
+    out pins, 24
+    irq set 0
+d2:
+    jmp x-- d2 [1]
+.wrap
+
+; ---------------------------------------------------------------------------
+; The logic analyser: on IRQ 0 (or 1), wait Y + 1 cycles and sample the IN
+; pins once. Autopush at the pin count, shifting left, so the sample sits in
+; the low bits of the pushed word. Y is loaded once.
+.program capture_irq0
+    pull block
+    out y, 32
+.wrap_target
+    wait 1 irq 0
+    mov x, y
+d:
+    jmp x-- d
+    in pins, 8
+.wrap
+
+.program capture_irq1
+    pull block
+    out y, 32
+.wrap_target
+    wait 1 irq 1
+    mov x, y
+d:
+    jmp x-- d
+    in pins, 2
+.wrap
+
+; ---------------------------------------------------------------------------
+; A FIFO sink: what RP-A's link transmitter costs core1 is one FIFO store,
+; and that is all the CPU bench needs from it.
+.program sink
+.wrap_target
+    pull block
+.wrap
+
+; ---------------------------------------------------------------------------
+; RP-B's CIRAM table, as the Rev1 cart runs it. IN base PPU A10, IN_COUNT 4:
+; `mov pc, pins` jumps to slot PA13:PA10, and each slot is that same
+; instruction with the CIRAM lines on its side-set (bit 0 CIRAM A10, bit 1
+; CIRAM /CE). The table is patched per mirroring mode. Must load at 0.
+.program ciram_table
+.side_set 2
+.origin 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+
+; ---------------------------------------------------------------------------
+; The RP-A -> RP-B link, as Rev1 runs it. OUT base LD0 (8 pins), side-set
+; base LCLK: bit 0 LCLK, bit 1 LFRM. A frame is one 32-bit word, four beats,
+; most significant byte first (OSR shifts left); data changes, then LCLK
+; toggles [3] cycles later, so the receiver samples data that has been
+; stable for 4 cycles and stays for 4 more. LFRM is high for the frame and
+; low for at least 4 cycles between frames, so a receiver that lost a beat
+; realigns on the next frame.
+.program link_tx
+.side_set 2
+.wrap_target
+    pull block      side 0b00 [3]
+    out pins, 8     side 0b10 [3]
+    nop             side 0b11 [3]
+    out pins, 8     side 0b11 [3]
+    nop             side 0b10 [3]
+    out pins, 8     side 0b10 [3]
+    nop             side 0b11 [3]
+    out pins, 8     side 0b11 [3]
+    nop             side 0b10 [3]
+.wrap
+
+; Receiver: IN base LD0. The `wait gpio`s name the bench's LCLK (8) and
+; LFRM (9); RP-B's copy names its own pins. Autopush at 32, shifting left:
+; the first beat lands in the top byte.
+.program link_rx
+.wrap_target
+    wait 0 gpio 9
+    wait 1 gpio 9
+    wait 1 gpio 8
+    in pins, 8
+    wait 0 gpio 8
+    in pins, 8
+    wait 1 gpio 8
+    in pins, 8
+    wait 0 gpio 8
+    in pins, 8
+.wrap
+
+; ===========================================================================
+; RP-A's PRG engine, the Rev1 candidate: PIO and DMA serve $8000-$FFFF, core1
+; only handles writes and the cart's own pages ($5000-$5FFF, WRAM).
+;
+; dut_capture: at every M2 rising edge of a read, push two words: the address
+; of the slot pointer for A14:A13 in RP-A's 16-byte-aligned slot table (Y holds
+; the table's address >> 4), then A0-A12. A DMA ring turns them into one byte:
+; ch A writes the first into ch B's READ_ADDR_TRIG; ch B copies the slot
+; pointer into ch D's READ_ADDR; ch C ORs the offset in through the register's
+; atomic SET alias (banks are 8K-aligned); ch D reads the byte into
+; dut_rom_out's FIFO and re-arms ch A. Nothing waits for /ROMSEL: the fetch
+; starts at M2 and the decision is made at the far end. A write cycle pushes
+; nothing. IRQ 4 is core1's "slot table changing" flag, held from a write's
+; M2 rise until the new pointers are in.
+; IN_BASE 0, IN_COUNT 26; JMP_PIN = R/W; OSR shifts right, ISR left.
+.program dut_capture
+    pull block
+    out y, 32
+.wrap_target
+top:
+    wait 0 gpio 21
+    wait 1 gpio 21
+    wait 0 irq 4
+    jmp pin rd
+    jmp top
+rd:
+    mov osr, pins
+    out x, 13
+    out null, 11
+    mov isr, y
+    in osr, 2
+    in null, 2
+    push
+    in x, 13
+    push
+.wrap
+
+; dut_rom_out: one byte per read cycle from the DMA ring. Drive it only if
+; /ROMSEL (JMP_PIN) has gone low, i.e. this is $8000-$FFFF; release when M2
+; falls. OUT base D0, 8 pins (MOV PINDIRS uses the OUT mapping).
+.program dut_rom_out
+.wrap_target
+top:
+    pull block
+    jmp pin top
+    out pins, 8
+    mov pindirs, ~null
+    wait 0 gpio 21
+    mov pindirs, null
+.wrap
+
+; dut_low_out: a byte core1 offers for one of the cart's own pages ($5000-
+; $5FFF, WRAM), pushed as soon as it sees M2, before /ROMSEL has settled.
+; JMP_PIN = /ROMSEL: still high a few cycles later means it was not the ROM
+; alias at $C000-$FFFF, so drive it; low means dut_rom_out has this cycle.
+.program dut_low_out
+.wrap_target
+top:
+    pull block [7]
+    jmp pin drive
+    jmp top
+drive:
+    out pins, 8
+    mov pindirs, ~null
+    wait 0 gpio 21
+    mov pindirs, null
+.wrap
+
+; dut_capture_x: the 512K-from-flash variant. The four PRG slots are the
+; QMI's four address-translation windows (ATRANS0-3, which core1 points at
+; the banks), so the address needs no slot table: push
+; 0x14000000 | A14:A13 << 22 | A12:A0 (Y = 0x14, the uncached XIP alias)
+; and one DMA hop writes it into ch D's READ_ADDR_TRIG.
+; IN_BASE 0, IN_COUNT 26; JMP_PIN = R/W; OSR shifts right, ISR left.
+.program dut_capture_x
+    pull block
+    out y, 32
+.wrap_target
+top: wait 0 gpio 21
+    mov isr, y
+    wait 1 gpio 21
+    wait 0 irq 4
+    jmp pin rd
+    jmp top
+rd: mov osr, pins
+    out null, 24
+    in osr, 2
+    in null, 9
+    in pins, 13
+    push
+.wrap

@@ -66,7 +66,7 @@ static void test_serve(void)
     s.wram = wram;
     s.wram_size = 8192;
     s.vectors = vectors;
-    s.sram_en = false;
+    s.prg_live = false;
     s.mailbox = true;
     s.wram_en = true;
 
@@ -105,7 +105,7 @@ static void test_serve(void)
     assert(nes_serve_ptr(&s, NES_R_ROM, 0xFF00) == vectors);
     assert(nes_serve_ptr(&s, NES_R_ROM, 0xFEFF) == NULL);
     assert(nes_serve_ptr(&s, NES_R_ROM, 0x8000) == NULL);
-    s.sram_en = true;
+    s.prg_live = true;
     assert(nes_serve_ptr(&s, NES_R_ROM, 0xFFFC) == NULL);
     /* mailbox dead: reply/status gone, loader stays */
     s.mailbox = false;

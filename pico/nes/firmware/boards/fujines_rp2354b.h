@@ -1,8 +1,9 @@
-/* fujines_rp2354b.h -- board header for the FujiNet NES cartridge.
+/* fujines_rp2354b.h -- board header for the FujiNet NES cartridge (Rev1),
+ * both RPs: RP-A (CPU bus) and RP-B (PPU bus).
  *
  * Modelled on the SDK's pimoroni_pico_plus2_rp2350.h: pico2.h hard-defines
- * the A variant, so a B board declares itself. The bus pin map lives in
- * include/nes_cart.h; nothing here may claim a GPIO.
+ * the A variant, so a B board declares itself. The pin maps live in
+ * include/nes_bus.h, nes_cart.h and nes_ppu.h; nothing here may claim a GPIO.
  */
 #ifndef FUJINES_RP2354B_H
 #define FUJINES_RP2354B_H
@@ -16,12 +17,13 @@ pico_board_cmake_set(PICO_PLATFORM, rp2350)
 // --- RP2350 VARIANT ---
 #define PICO_RP2350A 0
 
-// No default UART, LED, I2C or SPI pins: all 48 GPIOs belong to the bus.
-// The activity LED is on the '595.
+// No default UART, LED, I2C or SPI pins: the pins belong to the buses, the
+// link and RP-B's SWD (RP-A's LED is GP27, nes_cart.h).
 
 // --- FLASH ---
-// RP2354B: 2 MB W25Q16-class flash stacked in the package. fuji_store.h keeps
-// its flash image store in the top 1.5 MB (0x080000-0x1FFFFF).
+// RP2354B: 2 MB W25Q16-class flash stacked in the package. On RP-A,
+// fuji_store.h keeps its flash image store in the top 1.5 MB
+// (0x080000-0x1FFFFF); RP-B runs from SRAM and never uses its flash.
 #define PICO_BOOT_STAGE2_CHOOSE_W25Q080 1
 #ifndef PICO_FLASH_SPI_CLKDIV
 #define PICO_FLASH_SPI_CLKDIV 2

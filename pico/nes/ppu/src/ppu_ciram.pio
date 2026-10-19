@@ -1,0 +1,26 @@
+; ppu_ciram.pio -- RP-B's CIRAM table (PIO0, GPIOBASE 0).
+;
+; IN base PA10, IN_COUNT 4: `mov pc, pins` jumps to slot PA13:PA10, and each
+; slot is that same instruction with the CIRAM lines on its side-set (bit 0
+; CIRAM A10, bit 1 CIRAM /CE). ppu_main.c patches the table for the mirroring
+; mode; a patch is one 16-bit store the SM reads whole. Must load at 0. The
+; Phase 0 bench measured 30 ns from a PPU address change to the CIRAM lines.
+.program ppu_ciram
+.side_set 2
+.origin 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0
+    mov pc, pins side 0

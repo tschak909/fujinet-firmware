@@ -5,7 +5,8 @@
  * sealie,ave}.cpp), which host_test/test_nesmap.c transcribes and fuzzes
  * against this file. Bank numbers wrap modulo the image's bank count, which
  * is what the address lines of a real board do for power-of-two sizes and
- * what MAME does for the rest.
+ * what MAME does for the rest; a mask does the power-of-two case, because on
+ * the Rev1 cart the write path runs between two bus cycles.
  */
 
 #include <string.h>
@@ -15,9 +16,20 @@
 
 /* ---------------- bank helpers ---------------- */
 
+/* bank modulo n. Every licensed size is a power of two, and on the cart a
+ * divide is too slow for the bus cycle after a mapper write. */
+static inline uint32_t wrapn(uint32_t bank, uint32_t n)
+{
+    return (n & (n - 1)) ? bank % n : bank & (n - 1);
+}
+
 static void set_prg8(nesmap_t *m, unsigned slot, uint32_t bank)
 {
-    uint8_t v = (uint8_t)(bank % m->prg8);
+    uint8_t v;
+
+    if (!(m->outputs & NESMAP_OUT_PRG))
+        return;
+    v = (uint8_t)wrapn(bank, m->prg8);
 
     if (m->out.prg[slot] != v) {
         m->out.prg[slot] = v;
@@ -29,9 +41,11 @@ static void prg16(nesmap_t *m, unsigned slot16, uint32_t bank)
 {
     uint32_t n16 = m->prg8 / 2;
 
+    if (!(m->outputs & NESMAP_OUT_PRG))
+        return;
     if (n16 == 0)
         n16 = 1;                         /* an 8K image: mirror it       */
-    bank %= n16;
+    bank = wrapn(bank, n16);
     set_prg8(m, slot16 * 2, bank * 2);
     set_prg8(m, slot16 * 2 + 1, bank * 2 + 1);
 }
@@ -41,16 +55,22 @@ static void prg32(nesmap_t *m, uint32_t bank)
     uint32_t n32 = m->prg8 / 4;
     unsigned i;
 
+    if (!(m->outputs & NESMAP_OUT_PRG))
+        return;
     if (n32 == 0)
         n32 = 1;
-    bank %= n32;
+    bank = wrapn(bank, n32);
     for (i = 0; i < 4; i++)
         set_prg8(m, i, bank * 4 + i);
 }
 
 static void set_chr1(nesmap_t *m, unsigned slot, uint32_t bank)
 {
-    uint16_t v = (uint16_t)(bank % m->chr1);
+    uint16_t v;
+
+    if (!(m->outputs & NESMAP_OUT_CHR))
+        return;
+    v = (uint16_t)wrapn(bank, m->chr1);
 
     if (m->out.chr[slot] != v) {
         m->out.chr[slot] = v;
@@ -63,9 +83,11 @@ static void chr8(nesmap_t *m, uint32_t bank)
     uint32_t n8 = m->chr1 / 8;
     unsigned i;
 
+    if (!(m->outputs & NESMAP_OUT_CHR))
+        return;
     if (n8 == 0)
         n8 = 1;
-    bank %= n8;
+    bank = wrapn(bank, n8);
     for (i = 0; i < 8; i++)
         set_chr1(m, i, bank * 8 + i);
 }
@@ -75,9 +97,11 @@ static void chr4(nesmap_t *m, unsigned slot4, uint32_t bank)
     uint32_t n4 = m->chr1 / 4;
     unsigned i;
 
+    if (!(m->outputs & NESMAP_OUT_CHR))
+        return;
     if (n4 == 0)
         n4 = 1;
-    bank %= n4;
+    bank = wrapn(bank, n4);
     for (i = 0; i < 4; i++)
         set_chr1(m, slot4 * 4 + i, bank * 4 + i);
 }
@@ -86,9 +110,11 @@ static void chr2(nesmap_t *m, unsigned slot2, uint32_t bank)
 {
     uint32_t n2 = m->chr1 / 2;
 
+    if (!(m->outputs & NESMAP_OUT_CHR))
+        return;
     if (n2 == 0)
         n2 = 1;
-    bank %= n2;
+    bank = wrapn(bank, n2);
     set_chr1(m, slot2 * 2, bank * 2);
     set_chr1(m, slot2 * 2 + 1, bank * 2 + 1);
 }
@@ -250,21 +276,24 @@ static void mmc3_apply(nesmap_t *m, bool namcot)
     unsigned base = chr_inv ? 4 : 0;     /* where the two 2K banks land   */
     unsigned i;
 
-    if (prg_mode) {
-        set_prg8(m, 0, last - 1);
-        set_prg8(m, 1, m->bank[7]);
-        set_prg8(m, 2, m->bank[6]);
-    } else {
-        set_prg8(m, 0, m->bank[6]);
-        set_prg8(m, 1, m->bank[7]);
-        set_prg8(m, 2, last - 1);
+    if (m->outputs & NESMAP_OUT_PRG) {
+        if (prg_mode) {
+            set_prg8(m, 0, last - 1);
+            set_prg8(m, 1, m->bank[7]);
+            set_prg8(m, 2, m->bank[6]);
+        } else {
+            set_prg8(m, 0, m->bank[6]);
+            set_prg8(m, 1, m->bank[7]);
+            set_prg8(m, 2, last - 1);
+        }
+        set_prg8(m, 3, last);
     }
-    set_prg8(m, 3, last);
-
-    for (i = 0; i < 2; i++)
-        chr2(m, (base + i * 2) / 2, m->bank[i] >> 1);
-    for (i = 0; i < 4; i++)
-        set_chr1(m, ((base + 4) & 7) + i, m->bank[2 + i]);
+    if (m->outputs & NESMAP_OUT_CHR) {
+        for (i = 0; i < 2; i++)
+            chr2(m, (base + i * 2) / 2, m->bank[i] >> 1);
+        for (i = 0; i < 4; i++)
+            set_chr1(m, ((base + 4) & 7) + i, m->bank[2 + i]);
+    }
 }
 
 static void mmc3_reset(nesmap_t *m)
@@ -488,6 +517,11 @@ static uint32_t nes2_size(uint32_t units, uint32_t unit_bytes, uint8_t msb)
 
 nesmap_err_t nesmap_plan(const uint8_t *img, uint32_t size, nesmap_plan_t *p)
 {
+    return nesmap_plan_split(img, img + NESMAP_HDR_LEN, size, p);
+}
+
+nesmap_err_t nesmap_plan_split(const uint8_t *img, const uint8_t *body, uint32_t size, nesmap_plan_t *p)
+{
     bool nes2;
     uint32_t prg, chr;
 
@@ -553,8 +587,8 @@ nesmap_err_t nesmap_plan(const uint8_t *img, uint32_t size, nesmap_plan_t *p)
             return NESMAP_EMAPPER;
         p->claims_5000 = d->claims_5000;
     }
-    p->fuji_claim = memcmp(img + NESMAP_HDR_LEN + prg - FN_PRG_CLAIM_FROM_END,
-                           FN_R_CLAIM_SIG, FN_R_CLAIM_LEN) == 0;
+    p->fuji_claim = body && memcmp(body + prg - FN_PRG_CLAIM_FROM_END,
+                                   FN_R_CLAIM_SIG, FN_R_CLAIM_LEN) == 0;
     return NESMAP_OK;
 }
 
@@ -564,6 +598,7 @@ nesmap_err_t nesmap_init(nesmap_t *m, const nesmap_plan_t *plan)
 {
     memset(m, 0, sizeof *m);
     m->plan = *plan;
+    m->outputs = NESMAP_OUT_ALL;
     m->desc = nesmap_find(plan->mapper);
     if (m->desc == NULL)
         return NESMAP_EMAPPER;
@@ -580,6 +615,11 @@ nesmap_err_t nesmap_init(nesmap_t *m, const nesmap_plan_t *plan)
 void nesmap_reset(nesmap_t *m)
 {
     m->desc->reset(m);
+}
+
+void nesmap_set_outputs(nesmap_t *m, uint8_t outputs)
+{
+    m->outputs = outputs;
 }
 
 void nesmap_write(nesmap_t *m, uint16_t addr, uint8_t data, uint32_t cycle)

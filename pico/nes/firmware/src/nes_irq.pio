@@ -1,0 +1,18 @@
+; nes_irq.pio -- the MMC3 A12 filter (RP-A, PIO1, GPIOBASE 16).
+
+.program nes_a12_filter
+; The MMC3 scanline counter clocks on a PPU A12 rising edge that follows A12
+; being low for three M2 falling edges (nesdev). A PIO wait cannot be
+; abandoned by a second pin, so this is the same thing as a time filter:
+; poll A12 every 16 cycles for N iterations, restart if it rises early, then
+; wait for the real rise and raise a system interrupt. N is set at init from
+; MMC3_A12_FILTER_NS (nes_irq.h); JMP_PIN and IN base are both PPU A12.
+top:
+    wait 0 pin 0
+    set x, 12
+lp:
+    jmp pin, top [15]
+    jmp x--, lp [15]
+    wait 1 pin 0
+    irq 0
+    jmp top
