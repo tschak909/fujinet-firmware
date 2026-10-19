@@ -93,6 +93,46 @@ endif()
 add_test(NAME url_parser_tests COMMAND url_parser_tests)
 
 # ------------------------------------------------------------------------------
+# util_stoi(), the non-throwing std::stoi the modems parse ports with (#2040).
+# Same sources as url_parser_tests: utils.cpp needs them to link.
+# ------------------------------------------------------------------------------
+add_executable(utils_tests
+    UtilsTests.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/peoples_url_parser.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/string_utils.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/utils.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/U8Char.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/punycode.cpp
+    ${CMAKE_SOURCE_DIR}/lib/compat/compat_gettimeofday.c
+)
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    target_sources(utils_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/lib/compat/strlcat.c
+        ${CMAKE_SOURCE_DIR}/lib/compat/strlcpy.c
+    )
+endif()
+
+target_include_directories(utils_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/include/
+    ${CMAKE_SOURCE_DIR}/lib/
+    ${CMAKE_SOURCE_DIR}/lib/utils/
+    ${CMAKE_SOURCE_DIR}/lib/compat/
+    ${CMAKE_SOURCE_DIR}/lib/sam/
+    ${CMAKE_SOURCE_DIR}/components_pc/   # doctest
+    ${MBEDTLS_INCLUDE_DIR}
+)
+
+target_link_libraries(utils_tests PRIVATE ${MBEDCRYPTO_STATIC_LIB})
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    target_include_directories(utils_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/components_pc/libsmb2/include/   # asprintf.h
+    )
+    target_link_libraries(utils_tests PRIVATE bcrypt)
+endif()
+
+add_test(NAME utils_tests COMMAND utils_tests)
+
+# ------------------------------------------------------------------------------
 # The XPath-subset query engine. Split out of FNXML precisely so it can be
 # driven here with a literal document and no NetworkProtocol behind it.
 # ------------------------------------------------------------------------------
@@ -631,6 +671,50 @@ if(WIN32)
 endif()
 
 add_test(NAME tcp_protocol_tests COMMAND tcp_protocol_tests)
+
+# ------------------------------------------------------------------------------
+# NetworkProtocolFS::open() unmounts when the open fails (#1837), through a
+# test subclass; tcp_harness/ stands in for the bus.
+# ------------------------------------------------------------------------------
+add_executable(fs_protocol_tests
+    ProtocolFSTests.cpp
+    ${CMAKE_SOURCE_DIR}/lib/network-protocol/FS.cpp
+    ${CMAKE_SOURCE_DIR}/lib/network-protocol/Protocol.cpp
+    ${CMAKE_SOURCE_DIR}/lib/network-protocol/TCP.cpp      # Protocol.cpp casts to it
+    ${CMAKE_SOURCE_DIR}/lib/utils/peoples_url_parser.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/string_utils.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/utils.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/U8Char.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/punycode.cpp
+    ${CMAKE_SOURCE_DIR}/lib/compat/compat_inet.c
+    ${CMAKE_SOURCE_DIR}/lib/compat/compat_gettimeofday.c
+)
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+  target_sources(fs_protocol_tests PRIVATE
+      ${CMAKE_SOURCE_DIR}/lib/compat/strlcpy.c
+      ${CMAKE_SOURCE_DIR}/lib/compat/strlcat.c
+  )
+endif()
+
+target_include_directories(fs_protocol_tests BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests/tcp_harness/    # first: replaces fnTcpClient.h, fnTcpServer.h, bus.h
+    ${CMAKE_SOURCE_DIR}/lib/network-protocol/
+    ${CMAKE_SOURCE_DIR}/lib/device/fujiDevice/
+    ${CMAKE_SOURCE_DIR}/lib/utils/
+    ${CMAKE_SOURCE_DIR}/lib/sam/
+    ${CMAKE_SOURCE_DIR}/lib/compat/
+    ${CMAKE_SOURCE_DIR}/include/
+    ${CMAKE_SOURCE_DIR}/components_pc/        # doctest
+    ${CMAKE_SOURCE_DIR}/components_pc/libsmb2/include/   # asprintf.h on Windows
+    ${MBEDTLS_INCLUDE_DIR}
+)
+target_compile_definitions(fs_protocol_tests PRIVATE UNIT_TESTS)
+target_link_libraries(fs_protocol_tests PRIVATE ${CRYPTO_LIBS})
+if(WIN32)
+  target_link_libraries(fs_protocol_tests PRIVATE ws2_32 bcrypt)
+endif()
+
+add_test(NAME fs_protocol_tests COMMAND fs_protocol_tests)
 
 # ------------------------------------------------------------------------------
 # The N: TELNET protocol (lib/network-protocol/Telnet.cpp, on TCP.cpp) over the
