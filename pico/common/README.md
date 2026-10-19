@@ -12,15 +12,17 @@ ESP32-S3, a CDC-only USB device, and the start of the carts' CMake builds.
 | `include/fujibus_usb.h`, `src/fujibus_usb.c` | one request/reply round trip over USB CDC, and the hook for frames the ESP32 pushes mid-transaction |
 | `usb/usb_descriptors.c`, `usb/tusb_config.h` | the CDC-only TinyUSB device; the product string is the cart's `FUJI_USB_PRODUCT` |
 | `host_test/test_fujibus.c` | runs the codec self-test on the host |
-| `host_test/cart.mk` | the rules every cart's `host_test/Makefile` includes: one compile rule, the runner, binaries in the cart's `build/host_test` |
+| `host_test/cart.mk` | the rules every cart's `host_test/Makefile` includes: one compile rule, the runner, binaries in the cart's `build/host_test`, and a C++ compile of the tested sources, which the MAME grafts build as C++ |
 
 ## How it fits
 - The carts' `firmware/CMakeLists.txt` include `cmake/fujicart_pre.cmake`. [o2/](../o2/) keeps
   PicoPAC's board setup and takes only `cmake/pico_sdk_import.cmake`; intellivision, coco and mac
   have their own.
-- [astrocade/](../astrocade/), [channelf/](../channelf/) and [studio2/](../studio2/) build all
-  of it from their `firmware/CMakeLists.txt` through `FUJI_COMMON`, and each defines
-  `FUJI_USB_PRODUCT` there.
+- [arcadia/](../arcadia/), [astrocade/](../astrocade/), [channelf/](../channelf/),
+  [nes/](../nes/), [sms/](../sms/), [studio2/](../studio2/), [atari-5200/](../atari-5200/) and
+  [atari-7800/](../atari-7800/) build all of it from their `firmware/CMakeLists.txt` through
+  `FUJI_COMMON`, and each defines `FUJI_USB_PRODUCT` there. [s100/](../s100/) takes the codec and
+  the USB device but has its own link in place of `fujibus_usb.c`.
 - [o2/](../o2/) uses `include/` and `src/` only; its USB device stays in `o2/firmware` because it
   adds a mass-storage interface.
 - Each cart's own `fujimail.c` sits on top of `fujibus_usb.h`. The `emu/apply.sh` scripts copy
