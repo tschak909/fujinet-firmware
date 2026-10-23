@@ -20,6 +20,7 @@ Host-side unit tests and policy checks for the FujiNet-PC build. ctest runs them
 | `MediaTypeIMDTests.cpp` | `lib/media/rs232/diskTypeIMD.cpp` adapter (`mediatypeimd_tests`; built with `BUILD_RS232`) |
 | `MediaTypeAltairTests.cpp` | `lib/media/rs232/diskTypeAltair.cpp` adapter (`mediatypealtair_tests`; built with `BUILD_RS232`) |
 | `MediaTypeImgTests.cpp` | `lib/media/rs232/diskTypeImg.cpp` blank image from `create()` (`mediatypeimg_tests`; built with `BUILD_RS232`) |
+| `FileSizeTests.cpp` | `file_size_t` in `include/global_types.h`: the types it converts to without a cast, and `to()` refusing -1 and a size that doesn't fit (`file_size_tests`) |
 | `MediaType2MGTests.cpp` | `lib/media/apple/mediaType2MG.cpp` and `mediaTypePO.cpp` mounts, 2MG detection, the high-score marker and the 2MG header NEW DISK writes (`mediatype2mg_tests`; built with `BUILD_APPLE`) |
 | `FsSDListingTests.cpp` | `lib/FileSystem/fnFsSD.cpp` listings over a local directory: a second handle's `dir_open()` leaves `fnSDFAT`'s listing alone (`fssd_listing_tests`) |
 | `PDFPrinterTests.cpp` | `lib/printer-emulator/pdf_printer.cpp` page breaks when one buffer holds more than one line (`pdf_printer_tests`; not on the APPLE target) |
@@ -38,10 +39,6 @@ Host-side unit tests and policy checks for the FujiNet-PC build. ctest runs them
 | `CasFSKLoaderTests.cpp` | The value-to-symbol encoder in `casFSK.h` and the progressive loader in `lib/media/atari/casFSKLoader.cpp` (`casfskloader_tests`) |
 | `CassetteFSKReadTests.cpp` | `lib/device/sio/cassetteFSKRead.cpp` over a fake remote file that loses its position (`cassettefskread_tests`) |
 | `FSKTestImages.h` | Synthetic A8CAS images, a fake file and an encoder oracle shared by the two FSK test files above |
-| `TNFSFramingTests.cpp` | `lib/TNFSlib/tnfslib_framing.cpp` reply lengths, split and coalesced streams, malformed input (`tnfs_framing_tests`) |
-| `TNFSTcpRecvTests.cpp` | The real `lib/TNFSlib` client over TCP against a scripted server: split, merged, late, stale, malformed and cut-off replies, closed connections, failed MOUNT and EAGAIN; UDP and the UDP fallback unchanged (`tnfs_tcp_recv_tests`) |
-| `TNFSFormatTests.cpp` | TNFS reply formats in `lib/TNFSlib/tnfslib_framing.cpp`: TNFSD's and paumaed's optional fields framed with their reply, a delayed optional field read as the next answer, and the fence that settles an unknown field (`tnfs_format_tests`) |
-| `tnfs_harness/` | Stand-ins for `fnSystem.h` (a virtual clock), `bus.h`, `fnDNS.h`, `utils.h`, `fnTcpClient.h` and `fnUDP.h`, the last two backed by the scripted peer in `harness_server.h`; used by `tnfs_tcp_recv_tests` |
 | `TCPProtocolTests.cpp` | `lib/network-protocol/TCP.cpp` reads, writes, ACCEPT and CLOSE CLIENT over a fake socket (`tcp_protocol_tests`) |
 | `ProtocolFSTests.cpp` | `lib/network-protocol/FS.cpp` unmounting when an open fails, keeping its error (`fs_protocol_tests`) |
 | `SMBProtocolTests.cpp` | `lib/network-protocol/SMB.cpp` MKDIR and RMDIR failing on a URL with no share and on an unreachable server (`smb_protocol_tests`) |
