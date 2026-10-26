@@ -16,13 +16,15 @@ Host-side unit tests and policy checks for the FujiNet-PC build. ctest runs them
 | `CalendarTests.cpp` | `lib/utils/fn_time.cpp` and `lib/network-protocol/calendar_draft.cpp` (`calendar_tests`) |
 | `QRCodeTests.cpp` | `lib/qrcode/qrcode.c` version and ECC selection (`qrcode_tests`) |
 | `MailDraftTests.cpp` | `lib/network-protocol/mail_draft.cpp` RFC822 compose and reply (`mail_tests`) |
-| `IMDImageTests.cpp`, `IMDFixture.h` | `lib/media/IMDImage.cpp` (`imdimage_tests`; built with `UNIT_TESTS` and `FNIO_IS_STDIO`) |
-| `MediaTypeIMDTests.cpp` | `lib/media/rs232/diskTypeIMD.cpp` adapter (`mediatypeimd_tests`; built with `BUILD_RS232`) |
+| `IMDImageTests.cpp`, `IMDFixture.h` | `lib/media/IMDImage.cpp`, including `probe()`, through a `std::fstream`, a `std::FILE` and a handle with `fnFile`'s methods (`imdimage_tests`; no FujiNet include paths) |
+| `MediaTypeIMDTests.cpp` | `lib/media/rs232/diskTypeIMD.cpp` adapter, and `diskType.cpp` finding an IMD by its contents (`mediatypeimd_tests`; built with `BUILD_RS232`) |
 | `MediaTypeAltairTests.cpp` | `lib/media/rs232/diskTypeAltair.cpp` adapter (`mediatypealtair_tests`; built with `BUILD_RS232`) |
 | `MediaTypeImgTests.cpp` | `lib/media/rs232/diskTypeImg.cpp` blank image from `create()` (`mediatypeimg_tests`; built with `BUILD_RS232`) |
 | `FileSizeTests.cpp` | `file_size_t` in `include/global_types.h`: the types it converts to without a cast, and `to()` refusing -1 and a size that doesn't fit (`file_size_tests`) |
+| `MediaTypeAdamTests.cpp` | `lib/media/adam/` DDP, DSK and ROM 0-block mounts and block bounds (`mediatypeadam_tests`; built with `BUILD_ADAM`; not on Windows) |
 | `MediaType2MGTests.cpp` | `lib/media/apple/mediaType2MG.cpp` and `mediaTypePO.cpp` mounts, 2MG detection, the high-score marker and the 2MG header NEW DISK writes (`mediatype2mg_tests`; built with `BUILD_APPLE`) |
 | `FsSDListingTests.cpp` | `lib/FileSystem/fnFsSD.cpp` listings over a local directory: a second handle's `dir_open()` leaves `fnSDFAT`'s listing alone (`fssd_listing_tests`) |
+| `DirCacheTests.cpp` | `lib/FileSystem/fnDirCache.cpp` sorting for each directory option (`dircache_tests`) |
 | `PDFPrinterTests.cpp` | `lib/printer-emulator/pdf_printer.cpp` page breaks when one buffer holds more than one line (`pdf_printer_tests`; not on the APPLE target) |
 | `sioNetwork-DSTATS-test.cpp` | `sioNetwork` command recognition and DSTATS (`sio_dstats_tests`; ATARI target only) |
 | `sioNetworkTests.cpp` | What `sioNetwork` sends to the bus for a failed CLOSE, its repeat and a failed READ (`sio_network_tests`; ATARI target only) |
@@ -30,7 +32,7 @@ Host-side unit tests and policy checks for the FujiNet-PC build. ctest runs them
 | `sioNetworkStubs.cpp`, `sioNetworkStubs.h` | Link-time stubs shared by `sio_dstats_tests`, `sio_network_tests` and `ndevice_tests`; the `systemBus` stubs record into `bus` |
 | `AdamNetworkReceiveTests.cpp`, `adamNetworkReceiveStubs.cpp`, `adamNetworkReceiveStubs.h` | `lib/device/adamnet/adamNetwork.cpp` RECEIVE sending at most 1024 bytes and keeping the rest; the stubs record bus replies (`adam_network_receive_tests`; ADAM target only) |
 | `NQueryOutputModeTests.cpp`, `NParserReadTests.cpp` | `NParser` and `XMLParser` query output modes and short reads (`nquery_output_mode_tests`; ATARI target only) |
-| `MgHttpCompletionProbe.cpp`, `mg_http_completion_test.py` | Real PC HTTP fixed-length/chunked completion, redirect connection isolation, two-request reuse and body/status/EOF (`mg_http_completion_tests`; POSIX hosts) |
+| `MgHttpCompletionProbe.cpp`, `mg_http_completion_test.py` | Real PC HTTP fixed-length/chunked completion, redirect connection isolation, two-request reuse, body/status/EOF and hostname lookup through the system resolver (`mg_http_completion_tests`; POSIX hosts) |
 | `HttpHeaderTests.cpp` | `lib/fn_esp_http_client/fn_http_header.cpp` header chunking (`http_header_tests`; skipped where the BSD queue header is missing) |
 | `WebDavMethodsTests.cpp` | `lib/http/webdav/webdav_methods.h`: every method the WebDAV server handles is registered (`webdav_methods_tests`) |
 | `mac_gcr_test.cpp` | `lib/media/mac/macGCR.cpp` encode and decode round trip (`mac_gcr_tests`) |
@@ -42,7 +44,7 @@ Host-side unit tests and policy checks for the FujiNet-PC build. ctest runs them
 | `TCPProtocolTests.cpp` | `lib/network-protocol/TCP.cpp` reads, writes, ACCEPT and CLOSE CLIENT over a fake socket (`tcp_protocol_tests`) |
 | `ProtocolFSTests.cpp` | `lib/network-protocol/FS.cpp` unmounting when an open fails, keeping its error (`fs_protocol_tests`) |
 | `SMBProtocolTests.cpp` | `lib/network-protocol/SMB.cpp` MKDIR and RMDIR failing on a URL with no share and on an unreachable server (`smb_protocol_tests`) |
-| `TelnetProtocolTests.cpp` | `lib/network-protocol/Telnet.cpp` reads, writes and separate channels over the same fake socket (`telnet_protocol_tests`) |
+| `TelnetProtocolTests.cpp` | `lib/network-protocol/Telnet.cpp` reads (also after the peer closes), writes and separate channels over the same fake socket (`telnet_protocol_tests`) |
 | `tcp_harness/` | Stand-ins for `fnTcpClient.h`, `fnTcpServer.h` and `bus.h`, backed by the fake peer in `fnTcpClient.h`; used by `tcp_protocol_tests`, `telnet_protocol_tests`, `fs_protocol_tests` and `smb_protocol_tests` |
 | `check_no_build_ifdefs.py` | Policy: no `BUILD_*` macro in a preprocessor conditional under `lib/device/fujiDevice`, `lib/device/fujiClock` or `lib/device/NDevice` (`no_build_ifdefs_in_fujidevice`) |
 | `check_no_system_bus.py` | Policy: `SYSTEM_BUS` must not appear in any source under `lib/media` (`no_system_bus_in_media`) |

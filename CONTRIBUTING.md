@@ -214,6 +214,9 @@ tree does not conform.
   hard-disabled) and no workflow invokes it. `./coding-standard.py --addhook` installs it locally.
 - Use `std::string`, not Arduino `String`. Prefix new private members with `_`. Use fixed-width
   types and `__attribute__((packed))` structs for wire formats, never `std::string`.
+- Name variables, parameters and members for what they hold, in at least three letters, loop
+  indices included (`idx`, not `i`): a one-letter name can't be searched for or replaced. Rename
+  an existing short name only on lines your change already touches.
 - Keep each acronym in one case in new names, file names, comments and docs: all lower if it
   starts lower (`tnfs_open()`, `httpClient`), all upper if it starts upper (`TNFS`,
   `fnHTTPClient`), never mixed (`Tnfs`, `Http`). Existing names like `fnHttpService` and
@@ -327,6 +330,11 @@ One concern per pull request. Large mixed diffs are the most common reason a cha
   `[sio]`, `[rs232]`, `[atari]`, `[iec]`, `[lynx]`, `[apple2]`, `[drivewire]`, `[adamnet]`,
   `[network-protocol]`, `[fujiDevice]`, `[config]`, `[http]`, `[webui]`, `[all]`.
 - `include/version.h` is bumped by hand at release time only; do not touch it incidentally.
+- Name no AI tool or its vendor in anything that lands in the repo or on GitHub: code, comments,
+  docs, file and directory names, commit messages and PR descriptions. That includes the
+  `Co-Authored-By:` trailer and "Generated with" footer some assistants add by default.
+- Never commit an assistant's own instruction, memory or scratch files. `AGENTS.md` is the one
+  such file the project keeps.
 
 When the change fixes a tracked issue, put `Fixes #NNNN` on its own line in the **pull request
 description**. GitHub links the two straight away and closes the issue automatically when the PR

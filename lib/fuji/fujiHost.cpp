@@ -210,7 +210,7 @@ bool fujiHost::file_exists(const char *path)
     if (_type == HOSTTYPE_UNINITIALIZED || _fs == nullptr)
         return false;
 
-    // Add our prefix before opening
+    // Add our prefix
     char realpath[MAX_PATHLEN];
     if( false == util_concat_paths(realpath, _prefix, path, sizeof(realpath)) )
         return false;
@@ -252,14 +252,12 @@ fnFile * fujiHost::fnfile_open(const char *path, char *fullpath, int fullpathlen
         if(strlcpy(fullpath, realpath, fullpathlen) != strlen(realpath))
             return nullptr;
     }
-    Debug_printf("fujiHost #%d:%s opening file path \"%s\"\n", slotid, _hostname, fullpath);
+    Debug_printf("fujiHost #%d:%s opening file path \"%s\"\n", slotid, _hostname, realpath);
 
-    return _fs->fnfile_open(fullpath, mode);
+    return _fs->fnfile_open(realpath, mode);
 }
 
-/* Remove a file from the host
- * Returns true on error, false on success
-*/
+/* Remove a file from the host */
 error_is_true fujiHost::file_remove(char *fullpath)
 {
     if (_type == HOSTTYPE_UNINITIALIZED || _fs == nullptr)
@@ -380,7 +378,7 @@ int fujiHost::mount_tnfs()
     else
     {
         Debug_printf("Starting FileSystemTNFS(\"%s\")\n", _hostname);
-        if (((FileSystemTNFS *)_fs)->start(_hostname))
+        if (((FileSystemTNFS *)_fs)->start(_hostname).is_success())
         {
             return 0;
         }
@@ -426,7 +424,7 @@ int fujiHost::mount_smb()
         url[1] = 'm';
         url[2] = 'b';
 
-        if (((FileSystemSMB *)_fs)->start(url))
+        if (((FileSystemSMB *)_fs)->start(url).is_success())
         {
             return 0;
         }
@@ -472,7 +470,7 @@ int fujiHost::mount_nfs()
         url[1] = 'f';
         url[2] = 's';
 
-        if (((FileSystemNFS *)_fs)->start(url))
+        if (((FileSystemNFS *)_fs)->start(url).is_success())
         {
             return 0;
         }
@@ -512,7 +510,7 @@ int fujiHost::mount_ftp()
     {
         Debug_printf("Starting FileSystemFTP(\"%s\")\n", _hostname);
 
-        if (((FileSystemFTP *)_fs)->start(_hostname))
+        if (((FileSystemFTP *)_fs)->start(_hostname).is_success())
         {
             return 0;
         }
@@ -552,7 +550,7 @@ int fujiHost::mount_http()
     {
         Debug_printf("Starting FileSystemHTTP(\"%s\")\n", _hostname);
 
-        if (((FileSystemHTTP *)_fs)->start(_hostname))
+        if (((FileSystemHTTP *)_fs)->start(_hostname).is_success())
         {
             return 0;
         }
@@ -574,8 +572,7 @@ int fujiHost::unmount_fs()
     return 0;
 }
 
-/* Returns true if successful
-*  We expect a valid devicename, currently:
+/* We expect a valid devicename, currently:
 *  "SD" = local
 *  "smb://" = SMB share
 *  "nfs://" = NFS export
@@ -612,8 +609,6 @@ success_is_true fujiHost::mount()
     RETURN_SUCCESS_IF(0 == mount_tnfs());
 }
 
-/* Returns true if successful
-*/
 success_is_true fujiHost::unmount_success()
 {
     Debug_printf("::unmount {%d} \"%s\"\n", slotid+1, _hostname);

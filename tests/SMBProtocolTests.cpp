@@ -4,6 +4,7 @@
 #include <string>
 
 #include "SMB.h"
+#include "fnFsSMB.h"
 #include "samlib.h"
 #include "fnTcpClient.h"
 #include "compat_inet.h"
@@ -61,4 +62,27 @@ TEST_CASE("mkdir and rmdir fail when the server can't be reached")
     PeoplesUrlParser url(where);
     CHECK(smb.proto.mkdir(&url) != FUJI_ERROR::NONE);
     CHECK(smb.proto.rmdir(&url) != FUJI_ERROR::NONE);
+}
+
+// #2135, #2154: a failed start() leaked what it made; only LeakSanitizer (Linux) sees it
+TEST_CASE("FileSystemSMB frees what a failed start() made")
+{
+    SUBCASE("a URL that isn't smb://")
+    {
+        FileSystemSMB host;
+        CHECK(host.start("ftp://127.0.0.1/share").is_error());
+    }
+
+    SUBCASE("an smb:// URL with no share")
+    {
+        FileSystemSMB host;
+        CHECK(host.start("smb://127.0.0.1").is_error());
+    }
+
+    SUBCASE("a server that can't be reached")
+    {
+        FileSystemSMB host;
+        std::string where = "smb://127.0.0.1:" + std::to_string(closed_port()) + "/share";
+        CHECK(host.start(where.c_str()).is_error());
+    }
 }

@@ -205,40 +205,30 @@ target_include_directories(mail_tests PRIVATE
 add_test(NAME mail_tests COMMAND mail_tests)
 
 # ------------------------------------------------------------------------------
-# IMD (ImageDisk) core media type.
-# UNIT_TESTS is required - fujinet_pc.cmake puts -DDBUG2 on CMAKE_CXX_FLAGS,
-# which turns on DEBUG, which makes debug.h pull in <utils.h> that we do not
-# link here. debug.h undefines DEBUG when UNIT_TESTS is set.
-# FNIO_IS_STDIO pins fnFile to std::FILE: we inherit -D${FUJINET_BUILD_PLATFORM}
-# from CMAKE_CXX_FLAGS, which would otherwise select FileHandler and drag the
-# whole FileSystem stack in. The FileHandler path is covered by the ESP builds,
-# which glob lib/media/*.cpp into every target.
+# IMD (ImageDisk) core. Only lib/media and doctest are on the include path, so a
+# FujiNet or ESP32 header in IMDImage fails this build.
 # ------------------------------------------------------------------------------
 add_executable(imdimage_tests
     IMDImageTests.cpp
     ${CMAKE_SOURCE_DIR}/lib/media/IMDImage.cpp
 )
 
-target_compile_definitions(imdimage_tests PRIVATE UNIT_TESTS FNIO_IS_STDIO)
-
 target_include_directories(imdimage_tests PRIVATE
-    ${CMAKE_SOURCE_DIR}/include/      # debug.h, global_types.h
-    ${CMAKE_SOURCE_DIR}/lib/
-    ${CMAKE_SOURCE_DIR}/lib/FileSystem/
     ${CMAKE_SOURCE_DIR}/lib/media/
-    ${CMAKE_SOURCE_DIR}/components_pc/
+    ${CMAKE_SOURCE_DIR}/components_pc/   # doctest
 )
-
-if(WIN32)
-    target_link_libraries(imdimage_tests PRIVATE ws2_32)
-endif()
 
 add_test(NAME imdimage_tests COMMAND imdimage_tests)
 
 # ------------------------------------------------------------------------------
 # The RS232 MediaTypeIMD adapter. BUILD_RS232 selects the rs232 media layer;
 # the adapter deliberately includes nothing from lib/device or lib/bus, so the
-# media sources alone link. See imdimage_tests above for UNIT_TESTS/FNIO_IS_STDIO.
+# media sources alone link.
+# UNIT_TESTS is required - fujinet_pc.cmake puts -DDBUG2 on CMAKE_CXX_FLAGS,
+# which turns on DEBUG, which makes debug.h pull in <utils.h> that we do not
+# link here. debug.h undefines DEBUG when UNIT_TESTS is set.
+# FNIO_IS_STDIO pins fnFile to std::FILE, which would otherwise be FileHandler
+# and drag the whole FileSystem stack in. The ESP builds cover FileHandler.
 # ------------------------------------------------------------------------------
 add_executable(mediatypeimd_tests
     MediaTypeIMDTests.cpp
@@ -334,6 +324,47 @@ target_include_directories(file_size_tests PRIVATE
 add_test(NAME file_size_tests COMMAND file_size_tests)
 
 # ------------------------------------------------------------------------------
+# The ADAM DDP, DSK and ROM media bounds, built like mediatypeimg_tests above.
+# FLASH_SPIFFS and fnFsSPIFFS.cpp provide the fsFlash the high-score writes name.
+# Not on Windows: the FNIO_IS_STDIO paths use FILE::_flags and fsync().
+# ------------------------------------------------------------------------------
+if(NOT WIN32)
+  add_executable(mediatypeadam_tests
+      MediaTypeAdamTests.cpp
+      ${CMAKE_SOURCE_DIR}/lib/media/adam/mediaType.cpp
+      ${CMAKE_SOURCE_DIR}/lib/media/adam/mediaTypeDDP.cpp
+      ${CMAKE_SOURCE_DIR}/lib/media/adam/mediaTypeDSK.cpp
+      ${CMAKE_SOURCE_DIR}/lib/media/adam/mediaTypeROM.cpp
+      ${CMAKE_SOURCE_DIR}/lib/FileSystem/fnFS.cpp
+      ${CMAKE_SOURCE_DIR}/lib/FileSystem/fnFsSPIFFS.cpp
+  )
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    target_sources(mediatypeadam_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/lib/compat/strlcpy.c
+        ${CMAKE_SOURCE_DIR}/lib/compat/strlcat.c
+    )
+  endif()
+
+  target_compile_definitions(mediatypeadam_tests PRIVATE BUILD_ADAM FLASH_SPIFFS UNIT_TESTS FNIO_IS_STDIO)
+
+  target_include_directories(mediatypeadam_tests PRIVATE
+      ${CMAKE_SOURCE_DIR}/include/      # debug.h, global_types.h
+      ${CMAKE_SOURCE_DIR}/lib/
+      ${CMAKE_SOURCE_DIR}/lib/compat/
+      ${CMAKE_SOURCE_DIR}/lib/fuji/
+      ${CMAKE_SOURCE_DIR}/lib/FileSystem/
+      ${CMAKE_SOURCE_DIR}/lib/media/
+      ${CMAKE_SOURCE_DIR}/lib/media/adam/
+      ${CMAKE_SOURCE_DIR}/lib/utils/
+      ${CMAKE_SOURCE_DIR}/lib/hardware/
+      ${CMAKE_SOURCE_DIR}/lib/config/
+      ${CMAKE_SOURCE_DIR}/components_pc/
+  )
+
+  add_test(NAME mediatypeadam_tests COMMAND mediatypeadam_tests)
+endif()
+
+# ------------------------------------------------------------------------------
 # The Apple MediaType2MG and MediaTypePO mounts, built like mediatypeimg_tests above.
 # ------------------------------------------------------------------------------
 add_executable(mediatype2mg_tests
@@ -364,7 +395,7 @@ add_test(NAME mediatype2mg_tests COMMAND mediatype2mg_tests)
 
 # ------------------------------------------------------------------------------
 # FileSystemSDFAT listings over a local directory, as on FujiNet-PC. See
-# imdimage_tests above for UNIT_TESTS/FNIO_IS_STDIO.
+# mediatypeimd_tests above for UNIT_TESTS/FNIO_IS_STDIO.
 # ------------------------------------------------------------------------------
 add_executable(fssd_listing_tests
     FsSDListingTests.cpp
@@ -389,6 +420,48 @@ target_include_directories(fssd_listing_tests PRIVATE
 )
 
 add_test(NAME fssd_listing_tests COMMAND fssd_listing_tests)
+
+# ------------------------------------------------------------------------------
+# DirCache sorting (lib/FileSystem/fnDirCache.cpp). Same utils sources as
+# url_parser_tests: utils.cpp needs them to link.
+# ------------------------------------------------------------------------------
+add_executable(dircache_tests
+    DirCacheTests.cpp
+    ${CMAKE_SOURCE_DIR}/lib/FileSystem/fnDirCache.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/peoples_url_parser.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/string_utils.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/utils.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/U8Char.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/punycode.cpp
+    ${CMAKE_SOURCE_DIR}/lib/compat/compat_gettimeofday.c
+)
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    target_sources(dircache_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/lib/compat/strlcat.c
+        ${CMAKE_SOURCE_DIR}/lib/compat/strlcpy.c
+    )
+endif()
+
+target_include_directories(dircache_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/include/
+    ${CMAKE_SOURCE_DIR}/lib/
+    ${CMAKE_SOURCE_DIR}/lib/FileSystem/
+    ${CMAKE_SOURCE_DIR}/lib/utils/
+    ${CMAKE_SOURCE_DIR}/lib/compat/
+    ${CMAKE_SOURCE_DIR}/lib/sam/
+    ${CMAKE_SOURCE_DIR}/components_pc/   # doctest
+    ${MBEDTLS_INCLUDE_DIR}
+)
+
+target_link_libraries(dircache_tests PRIVATE ${MBEDCRYPTO_STATIC_LIB})
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    target_include_directories(dircache_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/components_pc/libsmb2/include/   # asprintf.h
+    )
+    target_link_libraries(dircache_tests PRIVATE bcrypt)
+endif()
+
+add_test(NAME dircache_tests COMMAND dircache_tests)
 
 # ------------------------------------------------------------------------------
 # pdfPrinter page breaks for buffers that hold more than one line. Not on APPLE:
@@ -873,8 +946,8 @@ endif()
 add_test(NAME fs_protocol_tests COMMAND fs_protocol_tests)
 
 # ------------------------------------------------------------------------------
-# The N: SMB protocol (lib/network-protocol/SMB.cpp) against a URL with no
-# share and an unreachable server.
+# The N: SMB protocol (lib/network-protocol/SMB.cpp) and FileSystemSMB
+# (lib/FileSystem/fnFsSMB.cpp) against bad URLs and an unreachable server.
 # ------------------------------------------------------------------------------
 add_executable(smb_protocol_tests
     SMBProtocolTests.cpp
@@ -882,6 +955,11 @@ add_executable(smb_protocol_tests
     ${CMAKE_SOURCE_DIR}/lib/network-protocol/FS.cpp
     ${CMAKE_SOURCE_DIR}/lib/network-protocol/Protocol.cpp
     ${CMAKE_SOURCE_DIR}/lib/network-protocol/TCP.cpp      # Protocol.cpp casts to it
+    ${CMAKE_SOURCE_DIR}/lib/FileSystem/fnFsSMB.cpp
+    ${CMAKE_SOURCE_DIR}/lib/FileSystem/fnFileSMB.cpp
+    ${CMAKE_SOURCE_DIR}/lib/FileSystem/fnFile.cpp
+    ${CMAKE_SOURCE_DIR}/lib/FileSystem/fnFS.cpp
+    ${CMAKE_SOURCE_DIR}/lib/FileSystem/fnDirCache.cpp
     ${CMAKE_SOURCE_DIR}/lib/utils/peoples_url_parser.cpp
     ${CMAKE_SOURCE_DIR}/lib/utils/string_utils.cpp
     ${CMAKE_SOURCE_DIR}/lib/utils/utils.cpp
@@ -900,6 +978,7 @@ endif()
 target_include_directories(smb_protocol_tests BEFORE PRIVATE
     ${CMAKE_SOURCE_DIR}/tests/tcp_harness/    # first: replaces fnTcpClient.h, fnTcpServer.h, bus.h
     ${CMAKE_SOURCE_DIR}/lib/network-protocol/
+    ${CMAKE_SOURCE_DIR}/lib/FileSystem/
     ${CMAKE_SOURCE_DIR}/lib/device/fujiDevice/
     ${CMAKE_SOURCE_DIR}/lib/utils/
     ${CMAKE_SOURCE_DIR}/lib/sam/
@@ -911,6 +990,11 @@ target_include_directories(smb_protocol_tests BEFORE PRIVATE
 )
 target_compile_definitions(smb_protocol_tests PRIVATE UNIT_TESTS)
 target_link_libraries(smb_protocol_tests PRIVATE smb2 ${CRYPTO_LIBS})
+# LeakSanitizer, for the FileSystemSMB leak test
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_compile_options(smb_protocol_tests PRIVATE -fsanitize=address)
+  target_link_options(smb_protocol_tests PRIVATE -fsanitize=address)
+endif()
 if(WIN32)
   target_link_libraries(smb_protocol_tests PRIVATE ws2_32 bcrypt)
 endif()

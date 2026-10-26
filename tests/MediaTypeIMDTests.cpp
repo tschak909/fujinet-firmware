@@ -224,7 +224,7 @@ TEST_CASE("writable mounts round-trip a sector in place")
     Mounted m(two_by_two(), true);
     REQUIRE(m.type == MEDIATYPE_IMD);
 
-    // A compressed record can only absorb a uniform buffer
+    // A uniform buffer fits a compressed record in place
     memset(m.media._disk_sectorbuff, 0x5A, 128);
     REQUIRE(m.media.write(6, false).is_success());
 
@@ -233,21 +233,23 @@ TEST_CASE("writable mounts round-trip a sector in place")
     CHECK(readcount == 128);
     CHECK(all_equal(m.media._disk_sectorbuff, 128, 0x5A));
 
-    SUBCASE("a neighbouring sector is untouched")
+    SUBCASE("a neighboring sector is untouched")
     {
         REQUIRE(m.media.read(5, &readcount).is_success());
         CHECK(all_equal(m.media._disk_sectorbuff, 128, 0xA1));
     }
 
-    SUBCASE("a non-uniform buffer a compressed record cannot hold is refused")
+    SUBCASE("a non-uniform buffer is stored")
     {
         memset(m.media._disk_sectorbuff, 0x11, 128);
         m.media._disk_sectorbuff[64] = 0x22;
-        CHECK(m.media.write(6, false).is_error());
+        REQUIRE(m.media.write(6, false).is_success());
 
-        uint8_t st[4] = {};
-        m.media.status(st);
-        CHECK(has(ctrl(st), DISK_CTRL_STATUS_WRITE_PROTECT_ERROR));
+        REQUIRE(m.media.read(6, &readcount).is_success());
+        CHECK(m.media._disk_sectorbuff[0] == 0x11);
+        CHECK(m.media._disk_sectorbuff[64] == 0x22);
+        REQUIRE(m.media.read(5, &readcount).is_success());
+        CHECK(all_equal(m.media._disk_sectorbuff, 128, 0xA1));
     }
 
     SUBCASE("past the end is refused")
@@ -368,6 +370,32 @@ TEST_CASE("discover_mediatype routes .imd to the adapter")
 }
 
 // The sectors mkfs.cpm -f ibm-3740 leaves, each as a full record
+TEST_CASE("discover_mediatype reads an unrecognized name")
+{
+    auto discover = [](const std::vector<uint8_t> &bytes, const char *name) {
+        fnFile *file = fopen(IMD_TEST_FILE, "w+b");
+        REQUIRE(file != nullptr);
+        REQUIRE(fwrite(bytes.data(), 1, bytes.size(), file) == bytes.size());
+        rewind(file); // as a freshly opened mount
+        mediatype_t type = MediaType::discover_mediatype(file, name, (uint32_t)bytes.size());
+        CHECK(ftell(file) == 0);
+        fclose(file);
+        remove(IMD_TEST_FILE);
+        return type;
+    };
+    std::vector<uint8_t> imd = two_by_two().out;
+    std::vector<uint8_t> raw(16 * 128, 0xE5);
+
+    CHECK(discover(imd, "DISK1") == MEDIATYPE_IMD);
+    CHECK(discover(imd, "cpm.xyz") == MEDIATYPE_IMD);
+    CHECK(discover(imd, "cpm.imd") == MEDIATYPE_IMD);
+    CHECK(discover(raw, "DISK1") == MEDIATYPE_UNKNOWN);
+
+    // Raw by name, so never read
+    CHECK(discover(imd, "cpm.img") == MEDIATYPE_UNKNOWN);
+    CHECK(discover(imd, "cpm.dsk") == MEDIATYPE_UNKNOWN);
+}
+
 TEST_CASE("create writes a blank IBM-3740 image")
 {
     fnFile *fp = fopen(IMD_TEST_FILE, "w+b");

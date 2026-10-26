@@ -27,9 +27,18 @@ FileSystemSMB::~FileSystemSMB()
     {
         _dircache.clear();
         smb2_disconnect_share(_smb);
-        smb2_destroy_url(_url);
-        smb2_destroy_context(_smb);
     }
+    _release();
+}
+
+void FileSystemSMB::_release()
+{
+    if (_url != nullptr)
+        smb2_destroy_url(_url);
+    if (_smb != nullptr)
+        smb2_destroy_context(_smb);
+    _url = nullptr;
+    _smb = nullptr;
 }
 
 success_is_true FileSystemSMB::start(const char *url, const char *user, const char *password)
@@ -53,6 +62,7 @@ success_is_true FileSystemSMB::start(const char *url, const char *user, const ch
     if (_url == nullptr) 
     {
         Debug_printf("FileSystemSMB::start() - failed to parse URL \"%s\", SMB2 error: %s\n", url, smb2_get_error(_smb));
+        _release();
         RETURN_ERROR_AS_FALSE();
     }
 
@@ -72,6 +82,7 @@ success_is_true FileSystemSMB::start(const char *url, const char *user, const ch
 	if (smb_error != 0) 
     {
         Debug_printf("FileSystemSMB::start() - failed to connect share \"//%s/%s\", SMB2 error: %s\n", _url->server, _url->share, smb2_get_error(_smb));
+        _release();
         RETURN_ERROR_AS_FALSE();
 	}
 
@@ -221,7 +232,7 @@ success_is_true FileSystemSMB::dir_open(const char  *path, const char *pattern, 
 
         // Populate directory cache with entries
         smb2dirent *smb_de;
-        fsdir_entry *fs_de;
+        fsdir_entry fs_de;
 
         while ((smb_de = smb2_readdir(_smb, smb_dir)) != nullptr)
         {
@@ -234,21 +245,23 @@ success_is_true FileSystemSMB::dir_open(const char  *path, const char *pattern, 
                 continue;
 
             // new dir entry
-            fs_de = &_dircache.new_entry();
+            fs_de = fsdir_entry();
 
             // set entry members
-            strlcpy(fs_de->filename, smb_de->name, sizeof(fs_de->filename));
-            fs_de->isDir = smb_de->st.smb2_type == SMB2_TYPE_DIRECTORY;
-            fs_de->size = (uint32_t)smb_de->st.smb2_size;
-            fs_de->modified_time = (time_t)smb_de->st.smb2_mtime;
+            strlcpy(fs_de.filename, smb_de->name, sizeof(fs_de.filename));
+            fs_de.isDir = smb_de->st.smb2_type == SMB2_TYPE_DIRECTORY;
+            fs_de.size = (uint32_t)smb_de->st.smb2_size;
+            fs_de.modified_time = (time_t)smb_de->st.smb2_mtime;
 
-            if (fs_de->isDir)
+            _dircache.add_entry(fs_de);
+
+            if (fs_de.isDir)
             {
-                Debug_printf(" add entry: \"%s\"\tDIR\n", fs_de->filename);
+                Debug_printf(" add entry: \"%s\"\tDIR\n", fs_de.filename);
             }
             else
             {
-                Debug_printf(" add entry: \"%s\"\t%lu\n", fs_de->filename, fs_de->size);
+                Debug_printf(" add entry: \"%s\"\t%lu\n", fs_de.filename, fs_de.size);
             }
         }
         smb2_closedir(_smb, smb_dir);
@@ -267,7 +280,6 @@ fsdir_entry *FileSystemSMB::dir_read()
 
 void FileSystemSMB::dir_close()
 {
-    // _dircache.clear();
 }
 
 uint16_t FileSystemSMB::dir_tell()

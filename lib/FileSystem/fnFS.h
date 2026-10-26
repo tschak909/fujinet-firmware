@@ -45,9 +45,12 @@ enum fsType
     FSTYPE_COUNT
 };
 
-#define DIR_OPTION_UNSORTED     0x0001 // Don't sort
-#define DIR_OPTION_DESCENDING   0x0002 // Sort descending, not ascending
-#define DIR_OPTION_FILEDATE     0x0003 // Sort by date, not name
+enum dir_option_t : uint16_t
+{
+    DIR_OPTION_UNSORTED   = 0x0001, // Don't sort
+    DIR_OPTION_DESCENDING = 0x0002, // Sort descending, not ascending
+    DIR_OPTION_FILEDATE   = 0x0004, // Sort by date, not name
+};
 
 
 struct fsdir_entry
@@ -75,7 +78,7 @@ protected:
 public:
     virtual ~FileSystem() {};
 
-    // The global (fnSDFAT and fsFlash) will return true so we can check before attempting to free/delete
+    // The globals (fnSDFAT and fsFlash) will return true so we can check before attempting to free/delete
     virtual bool is_global() { return false; };
 
     virtual bool running() { return _started; };
@@ -121,7 +124,7 @@ public:
     virtual void dir_close() = 0;
     // Returns current position in directory stream or FNFS_INVALID_DIRPOS on error
     virtual uint16_t dir_tell() = 0;
-    // Sets current position in directory stream. Returns false on error.
+    // Sets current position in directory stream.
     virtual success_is_true dir_seek(uint16_t position) = 0;
 };
 

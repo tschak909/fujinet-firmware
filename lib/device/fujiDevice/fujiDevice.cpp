@@ -603,7 +603,7 @@ success_is_true fujiDevice::fujicore_mount_disk_image_success(uint8_t deviceSlot
     if (access_mode & DISK_ACCESS_MODE_WRITE)
         mode[2] = '+';
 
-    // Make sure we weren't given a bad hostSlot
+    // Make sure we weren't given a bad device or host slot
     if (!validate_device_slot(deviceSlot))
         RETURN_ERROR_AS_FALSE();
 
@@ -671,7 +671,7 @@ void fujiDevice::insert_boot_device(uint8_t image_id, mediatype_t disk_type,
     switch (image_id)
     {
     case 0:
-        boot_img = "/autorun" + _diskImageExtension;
+        boot_img = config_image();
         fBoot = fsFlash.fnfile_open(boot_img.c_str());
         break;
     case 1:
@@ -685,7 +685,7 @@ void fujiDevice::insert_boot_device(uint8_t image_id, mediatype_t disk_type,
             {
                 PeoplesUrlParser parsed(*_lobbyDiskURL);
                 Debug_printf("Starting TNFS connection\n");
-                if (!fnTNFS.start(parsed.host.c_str()))
+                if (fnTNFS.start(parsed.host.c_str()).is_error())
                 {
                     Debug_printf("TNFS failed to start.\n");
                     fBoot = NULL;
