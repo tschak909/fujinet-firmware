@@ -75,6 +75,9 @@ struct AdamNetStatus
 } __attribute__((packed));
 static_assert(sizeof(AdamNetStatus) == 4, "AdamNetStatus must be 4 bytes");
 
+// Set in a device's status after the MN_SEND it last ACKed failed
+#define ADAMNET_STATUS_COMMAND_FAILED 0x20
+
 class systemBus;
 class adamFuji;     // declare here so can reference it, but define in fuji.h
 class adamPrinter;
@@ -94,15 +97,22 @@ protected:
      */
     virtual void reset();
 
+    // Like reset() after the RESET line, but on the bus task
+    virtual void adamnet_after_reset() {}
+
     virtual void adamnet_control_ready();   // Check if device is ready for command
     virtual void adamnet_control_receive(); // Tell device to queue up data
     virtual void adamnet_control_send(const FujiAdamPacket &packet) = 0; // Send data to device
 
     virtual AdamNetStatus deviceStatus() = 0;
+    // EOS reads the status byte of the other devices
+    virtual bool reportsCommandFailed() { return false; }
 
     // PC/BoIP: bypass the 300us response window (a slow host can blow it). Only
     // for re-polled block devices; single-shot devices keep it.
     bool _pc_no_response_deadline = false;
+
+    error_is_true _last_command{false};
 
     virtual void shutdown() {}
 
@@ -154,6 +164,7 @@ private:
 
     std::optional<ByteBuffer> _transaction_reply_encoded;
     bool _stall_silent = false;
+    volatile bool _reset_pending = false;
     AdamNetPhase busPhase;
 
     /**
@@ -226,7 +237,7 @@ public:
     void transaction_success() override;
     void transaction_error() override;
     using SystemBusBase::transaction_get;
-    success_is_true transaction_get(void *data, size_t len) override;
+    size_result_t transaction_get_length(void *data, size_t len) override;
     using SystemBusBase::transaction_send;
     void transaction_send(const void *data, size_t len, bool is_error=false) override;
 

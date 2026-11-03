@@ -1,10 +1,6 @@
 /* main.c -- FujiNet Arcadia 2001 cartridge firmware.
- *
- * core1 serves the cartridge bus (arcadia_cart.c); core0's whole job is
- * the USB CDC link to the ESP32-S3 and the mailbox service. Booting a game
- * is core1's doing -- it repoints the served window on the client's armed
- * FN_HOT_SWAP read -- so nothing here waits on it.
- */
+ * core1 serves the bus and swaps to a game on the armed FN_HOT_SWAP read; core0 runs USB and
+ * the mailbox service. */
 
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
@@ -14,6 +10,7 @@
 #include "arcadia_cart.h"
 #include "fujiboot.h"
 #include "fujinet.h"
+#include "fuji_tick.h"
 
 int main(void)
 {
@@ -26,6 +23,7 @@ int main(void)
     gpio_put(PICO_DEFAULT_LED_PIN, true);
 
     fuji_config_boot();
+    fuji_tick_start();
     multicore_launch_core1(arcadia_core1_main);
 
     tusb_init();

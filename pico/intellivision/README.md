@@ -2,9 +2,9 @@
 
 RP2040/RP2350 firmware that lets Intellivision programs talk to FujiNet. The cartridge
 firmware (`firmware/`, see `PROVENANCE.md` for license status) is a fork of Gennaro
-Tortone's **Minty** — GPLv3, unlike the unlicensed PiRTO II fork this branch used
-previously — extended so it also bridges the Intellivision's CP-1610 bus to an ESP32-S3
-running fujinet-firmware's `fujiversal-rs232` build over USB CDC.
+Tortone's **Minty** (GPLv3), itself a refactor of Andrea Ottaviani's **PiRTO II** (GPL-3.0),
+extended so it also bridges the Intellivision's CP-1610 bus to an ESP32-S3 running
+fujinet-firmware's `fujiversal-rs232` build over USB CDC.
 
 ```
 Intellivision --CP-1610 bus--> RP2040/RP2350 (Minty fork) --USB CDC--> ESP32-S3 fujiversal-rs232
@@ -22,7 +22,8 @@ accelerator/expanded-RAM peripheral some Intellivision homebrews use) emulation 
 *same* `$8000-$9FFF` window for JLP RAM — so the two need to coexist. The mailbox now lives
 at the *top* of the window, `$9C00-$9F3F` (832 words: a 64-word header, a 256-byte TX
 payload, and a 512-byte RX payload — shrunk from 1536, since nothing FujiNet CONFIG sends
-needs more), leaving `$8000-$9BFF` (7168 of 8192 words, ~87%) free for JLP. See
+needs more), leaving `$8000-$9BFF` (7168 of 8192 words, ~87%) free for JLP. A network-booted JLP game
+gets the mailbox only if its `.cfg` `[vars]` sets `fujinet = 1`. See
 `firmware/include/fuji_mailbox.h` for the exact layout and `firmware/src/cartridge.c` for
 how the two windows share the same RAM-claim branch in the bus loop at effectively zero
 extra cost in the timing-critical path.

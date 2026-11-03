@@ -149,6 +149,15 @@ TEST_CASE("only the defined query flags are accepted")
     CHECK_FALSE(fn_query_param_is_valid(0x40)); // above the field
 }
 
+TEST_CASE("the remap flag converts every occurrence of a character, not just the first")
+{
+    Session session("<r><t>M\xc3\xbcller \xc3\xbc" "ber</t></r>");
+    REQUIRE(session.parser.parse().is_success());
+
+    std::string remapped = session.query("/r/t", FN_QUERY_REMAP_CHARS);
+    CHECK(remapped.find("Mueller ueber") != std::string::npos);
+}
+
 // ----------------------------------------------------------------------------
 // Link stubs. Only XMLParser, NParser and the fnxml/fntext libraries are
 // compiled into this target; everything the bus headers drag in behind them is
@@ -203,7 +212,7 @@ void virtualDevice::sio_high_speed() {}
 void systemBus::transaction_accept(transState_t expectMoreData) {}
 void systemBus::transaction_success() {}
 void systemBus::transaction_error() {}
-success_is_true systemBus::transaction_get(void *data, size_t len) { RETURN_ERROR_AS_FALSE(); }
+size_result_t systemBus::transaction_get_length(void *data, size_t len) { RETURN_SIZE_ERROR(); }
 void systemBus::transaction_send(const void *data, size_t len, bool is_error) {}
 void systemBus::addDevice(virtualDevice *pDevice, fujiDeviceID_t device_id) {}
 

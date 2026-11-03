@@ -18,6 +18,12 @@ enum {
   OPCODE_HAS_PAYLOAD = 0x02,
 };
 
+// First byte of every command response, followed by any reply data
+enum {
+  TRANSACTION_STATUS_OK    = 0x00,
+  TRANSACTION_STATUS_ERROR = 0x01,
+};
+
 class iecDrive;
 class iecFuji;
 
@@ -65,7 +71,7 @@ public:
     void transaction_success() override;
     void transaction_error() override;
     using SystemBusBase::transaction_get;
-    success_is_true transaction_get(void *data, size_t len) override;
+    size_result_t transaction_get_length(void *data, size_t len) override;
     using SystemBusBase::transaction_send;
     void transaction_send(const void *data, size_t len, bool is_error=false) override;
 

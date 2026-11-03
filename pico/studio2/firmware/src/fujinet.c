@@ -1,10 +1,6 @@
-/* fujinet.c -- the cartridge's side of the mailbox.
- *
- * The protocol lives in fujimail.c, which the MAME model drives too, and
- * fuji_port.c binds it to the USB link; this is the rest of the port: where a
- * published byte goes, where a pushed image is kept (straight into the buffer
- * core1 is not serving), the cart's own register FN_REG_CONFIG, and the text
- * engine's share of the hotspot reads.
+/* fujinet.c -- this cart's fujimail port: where a published byte goes, where
+ * a pushed image lands (the buffer core1 is not serving), FN_REG_CONFIG, and
+ * the text engine's share of the hotspot reads.
  */
 
 #include <string.h>
@@ -24,6 +20,9 @@ static uint32_t push_len;
 
 static const uint8_t *config_rom;
 static uint32_t config_size;
+static s2_copy_t copy;
+
+static void service_idle(void);
 
 static void publish_staged(void)
 {
@@ -99,6 +98,8 @@ static void own_register(uint8_t reg, uint8_t data)
         fuji_load_stage_config(&fuji_loader, config_rom, config_size);
         fuji_load_arm(&fuji_loader);
         publish_staged();
+    } else if (s2map_copy_reg(&copy, fuji_load_live(&fuji_loader), reg, data)) {
+        fuji_cart_poke(FN_R_COPYDONE, copy.done);
     }
 }
 
@@ -116,6 +117,7 @@ void fuji_service_init(const uint8_t *config, uint32_t config_len)
     config_rom = config;
     config_size = config_len;
     fuji_port_init(&cart_port);
+    fujibus_set_idle(service_idle);
 }
 
 /* One hotspot read, by console address. */
@@ -140,6 +142,20 @@ static void swapped(void)
     publish_staged();
 }
 
+/* While a transaction is out (fujibus_usb.c's pump): draw what the console
+ * has sent since, up to the first mailbox read, which waits its turn. */
+static void service_idle(void)
+{
+    uint16_t event;
+
+    while (fuji_cart_peek(&event) && event >= FN_TEXT_BASE && event != S2_RING_SWAP) {
+        (void)fuji_cart_next(&event);
+        s2_text_event(&fuji_text, event);
+    }
+    s2_text_compose(&fuji_text);
+    fuji_cart_poke(FN_R_FRAMES, fuji_bus.frames);
+}
+
 void fuji_mailbox_service(void)
 {
     uint16_t e;
@@ -151,4 +167,5 @@ void fuji_mailbox_service(void)
             hotspot(e);
     }
     fuji_cart_poke(FN_R_LINK, fujibus_link_up() ? 1 : 0);
+    fuji_cart_poke(FN_R_COPYDONE, copy.done);
 }

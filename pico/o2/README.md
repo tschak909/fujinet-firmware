@@ -34,11 +34,25 @@ double pitch** — 16 pixels apart rather than 8 — so sixteen of them would wa
 quad group carries a four-character status cell. A scrolling list was never on
 the table.
 
+## Boards
+
+The cartridge firmware builds for two boards:
+- **PicoPAC** (the default): aotta's design on a "purple" RP2040 clone with
+  16 MB of flash. `./build-cart.sh` (FujiNet) or `./build-cart.sh --stock`.
+- **FujiNet-O2 Rev0** (fujinet-hardware `Magnavox-Odyssey2/FujiNet-O2-Rev0`): an
+  RP2354B and the ESP32-S3 on one cart, PicoPAC's pin map on 5 V-tolerant pads
+  behind 330R. `./build-cart.sh --board fujio2_rp2354b`.
+  - It senses the console's 5 V on GPIO40 and serves the bus only while the
+    console is on, so it may start on USB power first.
+  - It has no flash disk.
+  - Pin B (the Videopac+ video-mixer input) is on GPIO28, left low.
+
 ## Layout
 
 | Path | What it is |
 |---|---|
-| `firmware/` | the RP2040 cartridge: mailbox map, FujiBus codec, image mapper, host tests |
+| `firmware/` | the cartridge: mailbox map, FujiBus codec, image mapper, host tests |
+| `firmware/boards/` | board files other than PicoPAC's (`fujio2_rp2354b`) |
 | `firmware/include/fuji_mailbox.h` | the mailbox address map — single source of truth for all three sides |
 | `firmware/src/o2map.c` | how a raw cart image maps into the program window; linked by the emulator too |
 | `firmware/include/o2app.h` | protocol 2: how an APPBANK image is served, inlined by core1, o2em and MAME alike |
@@ -181,9 +195,27 @@ page, so each page can carry its own MOVP stub. The cartridge publishes
 
 Two things a client must know. A console RESET does not reset the cartridge, so
 the page and anything POKEd survive it: select page 0 and rewrite the tables at
-start. And an APPBANK image is served where the push left it — there is no RAM
-for a second copy — so a further push is refused (`FN_BOOT_ERR_BUSY`) until the
+start. And a *pushed* APPBANK image is served where the push left it — there is no
+RAM for a second copy — so a further push is refused (`FN_BOOT_ERR_BUSY`) until the
 cartridge is power-cycled.
+
+The **baked CONFIG** may be an APPBANK image too (up to 1K + 15 × 2K on the
+RP2040). It is copied into its own RAM at power-up, not the push buffer, so it can
+push games, and `fujimail_stage_live` stays false. `../build-cart.sh` bakes
+`build/config.bin`, or `~/Workspace/fujinet-config/o2/build/config.bin`, or
+`$FUJI_CLIENT`; `--bake` keeps the generated header as `firmware/include/fujiconfigrom.h`.
+
+### A mount, and the reset that boots it
+
+`MOUNT_IMAGE` ACKs after the whole image has been pushed, so a client that wants a
+progress bar writes SEQ by hand and polls `FN_R_BOOT_STATE` / `FN_R_BOOT_PCT`
+(`testrom/appmount.a48` is that client). The cart resets both, and `FN_R_BOOT_ERR`,
+when a `MOUNT_IMAGE` starts. The pushed image does **not** run yet: the CONFIG keeps
+executing, and keeps its status page, until the console's next fetch of `$400`
+(after a `jmp $000`, the BIOS runs and fetches it). Only then does core1 swap, so
+READY, 100% and the ACK reach the console that asked for the mount. A game that does
+not claim the mailbox never has a byte written into its table; one that does gets
+the status bytes carried across, so its first sequence number is still `ACKSEQ + 1`.
 
 ```sh
 ./build.sh apptest
@@ -205,6 +237,13 @@ emu/apply-mame.sh ~/Workspace/mame
 make -C ~/Workspace/mame -j$(nproc) REGENIE=1 NOWERROR=1
 mame odyssey2 -cartslot fujinet -cart build/apptest.bin      # FUJINET_TCP=host:port
 ```
+
+The `-cart` image is the baked CONFIG, a legacy or an APPBANK one, and may push.
+Throttled, transactions run on a worker thread, so a polling console sees the push's
+percent climb; `-nothrottle` runs them inside the console's write. `FUJINET_ASYNC=0/1`
+overrides, and `FUJINET_PACE_MS=n` holds each pushed frame n ms (a push from localhost
+otherwise ends within a frame or two). The staged image takes over at the console's next
+fetch of `$400`, as on the cart.
 
 MAME is the stricter model for a client that rewrites the VDC mid-frame: its
 i8244 refuses object register writes while the foreground is on, draws per
@@ -348,11 +387,9 @@ Not vendored here; fetch as needed.
 
 ## Licensing
 
-**PicoPAC cannot be forked.** `aotta/PicoPAC` carries no licence at all *and*
-redistributes GPL-3.0 (`wilco2009/Videopac-micro-SD-Cart`) and LGPL-3.0
-(`bwack/Videopac_USBCART`) material. Read it as a hardware reference — it wires
-every cartridge-port signal this design needs — but build the firmware on
-`wilco2009/Videopac-micro-SD-Cart` (GPL-3.0, PicoPAC's own ancestor) instead.
+The cartridge firmware is a fork of Andrea Ottaviani's
+[aotta/PicoPAC](https://github.com/aotta/PicoPAC) (GPL-3.0). Its files that came
+from A8PicoCart are unlicensed; see `firmware/PROVENANCE.md`.
 
 `g7000.h` is Sören Gust's, MIT-style. o2em is Clarified Artistic License, so our
 changes stay a patch file. `bios/` is gitignored: console BIOS dumps are

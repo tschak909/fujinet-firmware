@@ -23,13 +23,9 @@ lineage below, and avoids relicensing anything belonging to wilco2009 or bwack.
 
 ## Licence status
 
-**The upstream repository carries no licence file at all.** The GitHub API
-reports `"license": null`, `/license` 404s, and there is no LICENSE, COPYING or
-NOTICE anywhere in the tree. By default that means all rights reserved.
-
-**Andrea Ottaviani has granted permission for FujiNet to use his work here**
-(reported by Thomas Cherryhomes, 2026-09-02; the grant itself was obtained
-directly from the author). That covers aotta's own contributions.
+PicoPAC is Andrea Ottaviani's, licensed **GPL-3.0**: upstream added its
+`LICENSE` in `9ee28bb5`, and the vendored `f0b3ebcd` is that commit's parent,
+the same code. This fork is GPL-3.0 like the rest of fujinet-firmware.
 
 ### One gap that remains, and is not aotta's to close
 
@@ -38,18 +34,13 @@ Every C file in PicoPAC carries the header:
 > parts of code are directly from the A8PicoCart project by Robin Edwards 2023
 
 [robinhedwards/A8PicoCart](https://github.com/robinhedwards/A8PicoCart) is
-**also unlicensed**, and the file set here is a close clone of it — `main.c`,
+**unlicensed**, and the file set here is a close clone of it — `main.c`,
 `msc_disk.c`, `usb_descriptors.c`, `fatfs_disk.c`, `flash_fs.c`, `myboard.h`,
 `tusb_config.h`, `fatfs/`, down to the flash-filesystem magic `"RHE!FS30"`
-(Robin **H**enry **E**dwards). A permission from aotta does not extend to Robin
-Edwards's code, because it was never aotta's to license.
-
-This is the same situation the Intellivision port hit with PiRTO II — see
-[[../../intellivision/PROVENANCE.md]] and the note there about A8PicoCart. It was
-resolved there by re-vendoring onto Minty, which ships GPLv3. **Someone should
-seek the same grant from Robin Edwards before this is published**, or the
-A8PicoCart-derived files should be replaced. Flagging it rather than assuming
-one permission settles the whole tree.
+(Robin **H**enry **E**dwards). aotta's licence cannot cover Robin Edwards's
+code, and the Intellivision fork carries the same files (see
+[`../../intellivision/PROVENANCE.md`](../../intellivision/PROVENANCE.md)).
+A grant from Robin Edwards, or replacing those files, would close it.
 
 Third-party components with clear licences of their own, unaffected by any of
 the above: **FatFs** (ChaN, BSD-1-Clause) under `fatfs/`, and **TinyUSB** (MIT),
@@ -67,6 +58,12 @@ sockets, a pushbutton, a 1N4148 and the edge connector. 5 V TTL goes straight
 into the RP2040's clamp diodes, and its README warns *"DO NOT CONNECT PICO WHILE
 INSERTED IN A POWERED ON CONSOLE!"*. Any board FujiNet ships should level-shift
 DB0–DB7 and the address lines properly.
+
+FujiNet's own board, the FujiNet-O2 Rev0 cart (fujinet-hardware
+`Magnavox-Odyssey2/FujiNet-O2-Rev0`, `boards/fujio2_rp2354b.h`), keeps PicoPAC's
+pin map on an RP2354B instead. Its GPIO0-39 are 5 V tolerant, and every line
+goes through 330R. It also senses the console's 5 V, so it never drives an
+unpowered console.
 
 ## Local changes to the vendored files
 
@@ -103,5 +100,21 @@ still produces a stock PicoPAC, and it is built as a regression check.
 - `picopac_cart.c`: `picopac_cart_main()` loads the baked-in client and runs the
   mailbox service instead of building a menu and loading `selectgame.bin`.
 - `CMakeLists.txt`: the `CONFIG_FUJINET` option and the sources under `src/`.
+- `CMakeLists.txt`: `stdio_usb` is off when `CONFIG_FUJINET` is on, since it
+  would print on the CDC port FujiBus uses.
+- `CMakeLists.txt`, `picopac_cart.c`: with `CONFIG_FUJINET` the clock comes from
+  `fuji_clock_init()`, which raises the core voltage before setting 270 MHz.
 - `picopac_cart.c`: core1 acts on a mailbox write once, when /WR releases, not on
   every poll pass while it is low, since the registers auto-increment.
+- `CMakeLists.txt`: `-DPICO_BOARD=fujio2_rp2354b` (`boards/`) builds for the
+  FujiNet-O2 cart. PicoPAC's own path is untouched: the SDK resolves the board
+  when it is imported, before `myboard` is set, so PicoPAC builds use the SDK's
+  `pico.h`, and they stay byte-identical (`pico/tools/cmpfw.py`). The 16 MB flash
+  size and the 270 MHz / 1.20 V clock now apply to `myboard` only.
+- `main.c`, `picopac_cart.c`: on a board that senses the console's 5 V
+  (`FUJI_VSENSE_PIN`), the cart starts straight away, without waiting for /PSEN,
+  since USB may power it before the console is on. Core1 serves /PSEN and takes
+  /WR only while the console is on, and the bus pins' pulls are turned off
+  (RP2350-E9).
+- `main.c`, `msc_disk.c`: on a board without a flash disk (`FUJI_NO_FLASH_DISK`),
+  mounting over USB leaves the flash alone, and the MSC LUN reports no medium.

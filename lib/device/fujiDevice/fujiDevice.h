@@ -99,6 +99,13 @@ enum DET_file_flags_t {
     DET_FF_TRUNC = 0x02,
 };
 
+// READ DIRECTORY ENTRY addtl bits
+enum fujiDirFlags_t : uint8_t {
+    FUJI_DIR_FLAG_ADDITIONAL_DATA = 0x80,
+    FUJI_DIR_FLAG_BLOCK_MODE      = 0xC0,
+    FUJI_DIR_BLOCK_GROUP_MASK     = 0x3F,
+};
+
 /* Mixin handling. This allows adding additional commands to a
    fujiDevice without having to mess around with the command handling
    in each subclass. Just add a mixin and add more commands.
@@ -174,14 +181,7 @@ protected:
                                                    uint8_t maxlen) = 0;
     dirEntryDetails _additional_direntry_details(fsdir_entry_t *f);
 
-    // Platform hook for fujicore_mount_disk_image_success(): the base
-    // implementation calls DISK_DEVICE::mount() with its original 5-arg
-    // signature, so this stays the only call site that needs a
-    // platform-specific override rather than a #ifdef BUILD_* (banned here,
-    // see tests/check_no_build_ifdefs.py). rs232Fuji overrides this to pass
-    // `host` through to rs232Disk::mount(), which hands it to MediaTypeROM so
-    // the ROM's memory-map sibling is opened through the same fujiHost the ROM
-    // itself came from -- see lib/media/rs232/diskTypeROM.cpp.
+    // Platform hook for fujicore_mount_disk_image_success()
     virtual mediatype_t mount_media(DISK_DEVICE *disk_dev, fujiDisk &disk, fujiHost &host,
                                     disk_access_flags_t mode)
     {

@@ -7,19 +7,12 @@ fuji_ring_t fuji_ring;
 volatile bool fuji_mailbox_active = true;
 
 o2app_t fuji_app;
+o2app_t fuji_app_next;
 volatile bool fuji_app_armed;
 volatile bool fuji_app_live;
 
-extern unsigned char rom_table[8][4096];
-extern unsigned char new_rom_table[8][4096];
-
-/* Set once an image is staged. core1 owns the live-table pointer and swaps it
- * to new_rom_table at the boot fetch, so from that moment on this is the table
- * a published byte has to reach -- but core0 cannot read that pointer safely
- * (core1 writes it, and nothing makes the load ordered or unhoistable). It
- * publishes into both tables instead: rom_table is dead memory after the swap,
- * and eight extra stores off the bus loop cost nothing. */
-static bool publish_staged;
+unsigned char (*volatile fuji_stage_rom)[4096];
+volatile bool fuji_stage_mailbox;
 
 bool fuji_cart_next_write(uint8_t *addr, uint8_t *data)
 {
@@ -36,29 +29,54 @@ bool fuji_cart_next_write(uint8_t *addr, uint8_t *data)
     return true;
 }
 
-/* Publish one mailbox byte. It goes into every bank because the console may be
- * running with any of them selected, and the mailbox has to answer regardless
- * of which. This is why serving the mailbox costs the bus loop nothing: by the
- * time core1 sees the read, the byte is already ROM as far as it is concerned. */
+/* Into every bank of the table core1 serves, since the console may have any
+ * selected; core1 then serves it as plain ROM. While an image is staged that
+ * claims the mailbox its table gets the byte too, so it takes over a current
+ * page. A staged game that does not claim it is never written to: those bytes
+ * are the game's. core1 may swap between the loads below, which is harmless:
+ * the table read first is written either way, and the flag is read after it,
+ * as fuji_cart_swap() publishes them in the opposite order. */
 void fuji_cart_poke(unsigned prog_addr, uint8_t value)
 {
-    int b;
+    unsigned char (*running)[4096] = fuji_rom;
+    unsigned char (*staged)[4096] = fuji_stage_rom;
+    unsigned bank;
 
     if (!fuji_mailbox_active)
-        return;                 /* a booted game owns this page now */
-    for (b = 0; b < 8; b++) {
-        rom_table[b][prog_addr & 0xFFF] = value;
-        if (publish_staged)
-            new_rom_table[b][prog_addr & 0xFFF] = value;
-    }
+        return;                 /* the running game owns this page */
+    for (bank = 0; bank < 8; bank++)
+        running[bank][prog_addr & 0xFFF] = value;
+    if (staged != NULL && staged != running && fuji_stage_mailbox)
+        for (bank = 0; bank < 8; bank++)
+            staged[bank][prog_addr & 0xFFF] = value;
 }
 
-/* Called when an image is armed: o2map_apply has just written it over the
- * staged table's mailbox page, so a mailbox that survives the boot has to be
- * published into that table too, from here to the end of the session. */
-void fuji_cart_stage_boot(void)
+unsigned char (*fuji_cart_stage_table(void))[4096]
 {
-    publish_staged = true;
+    /* Armed already means the other table holds an image the console has not
+     * taken yet; a newer push replaces it there. */
+    if (fuji_boot_armed && fuji_stage_rom != NULL)
+        return fuji_stage_rom;
+    return fuji_rom == rom_table ? new_rom_table : rom_table;
+}
+
+void fuji_cart_stage_boot(unsigned char (*table)[4096], bool claims)
+{
+    unsigned char (*running)[4096] = fuji_rom;
+    unsigned bank;
+
+    if (claims && table != running) {
+        /* A fresh page that carries over the status bytes: the console has
+         * not seen the end of the MOUNT_IMAGE that staged this, and the new
+         * image's first sequence number comes from ACKSEQ. */
+        for (bank = 0; bank < 8; bank++) {
+            memset(&table[bank][FN_R_ACKSEQ], 0, 0x1000 - FN_R_ACKSEQ);
+            memcpy(&table[bank][FN_R_ACKSEQ], &running[0][FN_R_ACKSEQ],
+                   FN_R_DATA - FN_R_ACKSEQ);
+        }
+    }
+    fuji_stage_rom = table;
+    fuji_stage_mailbox = claims;
 }
 
 void fuji_cart_paint(void)
@@ -78,6 +96,7 @@ void fuji_cart_init(void)
 {
     memset((void *)&fuji_ring, 0, sizeof fuji_ring);
     fuji_mailbox_active = true;
-    publish_staged = false;
+    fuji_stage_rom = NULL;
+    fuji_stage_mailbox = false;
     fuji_cart_paint();
 }

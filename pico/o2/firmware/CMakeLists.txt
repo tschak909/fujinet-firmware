@@ -1,13 +1,24 @@
 cmake_minimum_required(VERSION 3.13)
 
+# FUJINET: another board than PicoPAC's: -DPICO_BOARD=fujio2_rp2354b builds for
+# the FujiNet-O2 Rev0 cart. Its boards/ file sets the platform, and the SDK
+# resolves the board when it is imported, so both come first.
+if(PICO_BOARD AND NOT PICO_BOARD STREQUAL "myboard")
+    set(PICO_BOARD_HEADER_DIRS ${CMAKE_CURRENT_LIST_DIR}/boards)
+    include(${CMAKE_CURRENT_LIST_DIR}/boards/${PICO_BOARD}.cmake)
+    set(FUJI_O2_BOARD ${PICO_BOARD})
+endif()
+
 # initialize the SDK based on PICO_SDK_PATH
 # note: this must happen before project()
 include(${CMAKE_CURRENT_LIST_DIR}/../../common/cmake/pico_sdk_import.cmake)
 
 project(PicoPAC_cart)
 
+if(NOT FUJI_O2_BOARD)
 set(PICO_BOARD_HEADER_DIRS ${CMAKE_SOURCE_DIR}) 
 set(PICO_BOARD myboard)
+endif()
 
 # initialize the Raspberry Pi Pico SDK
 pico_sdk_init()
@@ -18,9 +29,11 @@ set(FUJI_COMMON ${CMAKE_CURRENT_LIST_DIR}/../../common)
 add_executable(PicoPAC_cart)
 
 # 16megs of flash on purple pico clones
+if(PICO_BOARD STREQUAL "myboard")
 target_compile_definitions(PicoPAC_cart PRIVATE
     PICO_FLASH_SIZE_BYTES=16777216
 )
+endif()
 
 target_compile_options(PicoPAC_cart PRIVATE "-Os")
 
@@ -29,6 +42,12 @@ target_compile_options(PicoPAC_cart PRIVATE "-Os")
 option(CONFIG_FUJINET "Enable the FujiNet mailbox" ON)
 if(CONFIG_FUJINET)
     target_compile_definitions(PicoPAC_cart PRIVATE CONFIG_FUJINET=1)
+    # On the RP2040 the bus loop needs 270 MHz, which wants the core voltage
+    # raised; other boards name their clock in their header.
+    if(PICO_BOARD STREQUAL "myboard")
+        target_compile_definitions(PicoPAC_cart PRIVATE
+            FUJI_SYS_CLOCK_KHZ=270000 FUJI_VREG_VOLTAGE=VREG_VOLTAGE_1_20)
+    endif()
 endif()
 
 #pico_set_linker_script(PicoPAC_cart ${CMAKE_CURRENT_SOURCE_DIR}/memmap_custom.ld)
@@ -66,13 +85,23 @@ target_include_directories(PicoPAC_cart PUBLIC
     ${FUJI_COMMON}/include
 )
 
-# Enable usb output, disable uart output
-pico_enable_stdio_usb(PicoPAC_cart 1)
+# FUJINET: build-cart.sh's fresh fujiconfigrom.h, when it found a CONFIG to bake,
+# comes ahead of the committed one in include/.
+if(DEFINED ENV{FUJI_GEN})
+    target_include_directories(PicoPAC_cart BEFORE PUBLIC $ENV{FUJI_GEN})
+endif()
+
+# stdio_usb would print on the CDC port FujiBus owns, so only a stock build gets it.
+if(CONFIG_FUJINET)
+    pico_enable_stdio_usb(PicoPAC_cart 0)
+else()
+    pico_enable_stdio_usb(PicoPAC_cart 1)
+endif()
 pico_enable_stdio_uart(PicoPAC_cart 0)
 
 # In addition to pico_stdlib required for common PicoSDK functionality, add dependency on tinyusb_device
 # for TinyUSB device support
-target_link_libraries(PicoPAC_cart PUBLIC pico_stdlib hardware_flash tinyusb_device pico_multicore)
+target_link_libraries(PicoPAC_cart PUBLIC pico_stdlib hardware_flash hardware_vreg tinyusb_device pico_multicore)
 #target_link_libraries(PicoPAC_cart PUBLIC pico_stdlib hardware_flash)
 
 # create map/bin/hex/uf2 file in addition to ELF.

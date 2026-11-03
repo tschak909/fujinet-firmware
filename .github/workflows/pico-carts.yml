@@ -143,7 +143,7 @@ jobs:
       # the 8048 are page-relative.
       - name: Assemble
         working-directory: pico/o2
-        run: ./build.sh hello fujitest fujiboot fujicfg apptest
+        run: ./build.sh hello fujitest fujiboot fujicfg apptest appmount
 
       # No code may live above $7FF. CALL and JMP carry 11 address bits and the
       # twelfth comes from the MB flag, which the assembler sets on the
@@ -175,7 +175,7 @@ jobs:
           make -C firmware/host_test
           build/host_test/test_o2map build/hello.bin build/fujitest.bin \
                                      build/fujiboot.bin build/fujicfg.bin \
-                                     build/apptest.bin
+                                     build/apptest.bin build/appmount.bin
 
   astrocade-console-client:
     name: "Astrocade Z80 clients"
@@ -269,7 +269,7 @@ jobs:
       # refuses an image with a page the cart may not claim.
       - name: Assemble and validate
         working-directory: pico/studio2
-        run: ASL=$HOME/asl/asl ./build.sh hello fujitest fujiboot
+        run: ASL=$HOME/asl/asl ./build.sh hello fujitest fujiboot s2gfx
 
   nes-console-client:
     name: "NES 6502 clients"
@@ -323,7 +323,7 @@ jobs:
       # the 0x1AFF ROM top).
       - name: Assemble
         working-directory: pico/arcadia
-        run: ./build.sh fujitest fujiboot fujicfg
+        run: ./build.sh fujitest fujiboot fujicfg fujibank
 
       # The 2650's return stack is 8 entries deep and on chip -- a call graph
       # deeper than that silently corrupts returns. Every client must stay
@@ -331,7 +331,7 @@ jobs:
       - name: Check the 8-deep call stack
         working-directory: pico/arcadia
         run: |
-          for c in fujitest fujiboot fujicfg; do
+          for c in fujitest fujiboot fujicfg fujibank; do
               python3 tools/checkdepth.py \
                   testrom/$c.asm testrom/fujilib.inc testrom/fujidisp.inc
           done
@@ -382,6 +382,12 @@ jobs:
         env:
           PICO_SDK_PATH: ${{ github.workspace }}/pico-sdk
         run: ./build-cart.sh --stock
+
+      - name: Odyssey 2 cartridge (FujiNet-O2 Rev0 board, RP2354B)
+        working-directory: pico/o2
+        env:
+          PICO_SDK_PATH: ${{ github.workspace }}/pico-sdk
+        run: ./build-cart.sh --board fujio2_rp2354b
 
       # Pulls no-OS-FatFS-SD (v3.6.2) and littlefs (master) over the network via
       # FetchContent. Its `git describe --tags` falls back to version 0.0 on a
@@ -475,6 +481,14 @@ jobs:
           PICO_SDK_PATH: ${{ github.workspace }}/pico-sdk
         run: |
           # CONFIG comes from firmware/baked/; the 2650 client job assembles the clients.
+          ./build-cart.sh --baked
+
+      - name: ColecoVision cartridge (fujicoleco)
+        working-directory: pico/coleco
+        env:
+          PICO_SDK_PATH: ${{ github.workspace }}/pico-sdk
+        run: |
+          # CONFIG comes from firmware/baked/; the z88dk clients are not built in CI.
           ./build-cart.sh --baked
 
       # Drives the same [fujinet] pico_* keys the ESP32 build uses, so a

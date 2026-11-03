@@ -38,6 +38,7 @@
 /* FUJINET */
 #if CONFIG_FUJINET
 #include "fuji_cart.h"
+#include "fuji_clock.h"
 #include "fuji_mailbox.h"
 #include "fujiboot.h"
 #include "fujinet.h"
@@ -105,6 +106,15 @@
 #define LED_PIN_MASK    0x02000000L //gpio 25   
 #define NOTCS_PIN_MASK  0x04000000L //gpio 26  
 #define TD_PIN_MASK     0x08000000L //gpio 27 
+
+/* FUJINET: a board that senses the console's 5 V serves the bus only while the
+ * console is on; with it off, /PSEN and /WR float low and must be ignored, and
+ * D0-D7 must not drive an unpowered console. Without the sense: always on. */
+#ifdef FUJI_VSENSE_PIN
+#define CONSOLE_ON()    gpio_get(FUJI_VSENSE_PIN)
+#else
+#define CONSOLE_ON()    1
+#endif
 
 // Aggregate Pico pin usage masks
 #define ALL_GPIO_MASK  	0x0FFFFFFFL
@@ -215,19 +225,17 @@ void __not_in_flash_func(core1_main()) {
 		 	pins=gpio_get_all();
 	        addr = (pins & 0b0111111111111);  
 			bank=3-((gpio_get(P10_PIN)+(gpio_get(P11_PIN)*2)));
-	   		if (gpio_get(PSEN_PIN)==0) {
+	   		if (gpio_get(PSEN_PIN)==0 && CONSOLE_ON()) {
 #if CONFIG_FUJINET
 				/* FUJINET: a fetch of the cartridge reset vector with a staged
 				 * image waiting means the console has just restarted. Swap
 				 * before serving the byte, so the restart reads the new image
 				 * from its very first fetch rather than a torn mixture. */
 				if (fuji_boot_armed && addr == 0x400) {
-					fuji_rom = new_rom_table;
-					fuji_app_live = fuji_app_armed;
-					fuji_boot_armed = false;
-					/* core0 filled fuji_app before arming: nothing read
-					 * from it may be hoisted above this point. */
+					/* core0 filled the staged image before arming: nothing
+					 * read from it may be hoisted above this point. */
 					__compiler_memory_barrier();
+					fuji_cart_swap();
 				}
 				SET_DATA_MODE_OUT;
 				if (fuji_app_live)
@@ -241,7 +249,7 @@ void __not_in_flash_func(core1_main()) {
     			gpio_put_masked(DATA_PIN_MASK,(fuji_rom[bank][addr])<<D0_PIN);
 #endif
 			} 
-		  	if((gpio_get(CS_PIN)==0) && (gpio_get(WR_PIN)==0)) {
+		  	if((gpio_get(CS_PIN)==0) && (gpio_get(WR_PIN)==0) && CONSOLE_ON()) {
 				   uint8_t wa = addr & 0xff;
 				   uint8_t wd = ((pins & DATA_PIN_MASK)>>D0_PIN);
 				   extram[wa]=wd;
@@ -930,6 +938,18 @@ void picopac_cart_main()
    
 
     gpio_init_mask(ALL_GPIO_MASK);
+#ifdef FUJI_VSENSE_PIN
+    /* FUJINET: RP2350 pads reset with their pull-downs on, and erratum
+     * RP2350-E9 makes a pulled-down input latch near 2 V: the bus pins float
+     * free, and so do the console-5V sense and pin B (the board pulls B down). */
+    for (uint pin = 0; pin < 32; pin++)
+        if (ALL_GPIO_MASK & (1u << pin))
+            gpio_disable_pulls(pin);
+    gpio_init(FUJI_VSENSE_PIN);
+    gpio_disable_pulls(FUJI_VSENSE_PIN);
+    gpio_init(FUJI_VPB_PIN);
+    gpio_disable_pulls(FUJI_VPB_PIN);
+#endif
   
     
     stdio_init_all();   // for serial output, via printf()
@@ -954,8 +974,12 @@ void picopac_cart_main()
   	// overclocking isn't necessary for most functions - but XEGS carts weren't working without it
 	// I guess we might as well have it on all the time.
     
+#if CONFIG_FUJINET
+	fuji_clock_init();
+#else
 	set_sys_clock_khz(270000, true);
     //set_sys_clock_khz(170000, true);
+#endif
 
 
   memset(extram,0,0xff);

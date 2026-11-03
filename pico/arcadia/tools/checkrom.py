@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
 """checkrom.py -- validate a built Arcadia FujiNet client image.
 
-Enforces the layout contract in firmware/include/fuji_mailbox.h so a client
-that drifts into the mailbox pages fails its build, not a debugging session:
-  - exactly 8192 bytes;
-  - the cartridge header: a BCTA,UN ($1F) at image 0 and the RETC,UN ($17)
-    interrupt guard at image 3 (the convention every commercial cart follows;
-    some consoles vector a sprite interrupt through $0003);
-  - nothing but zeros in 0x1B00-0x1FFF except the "FUJI" claim at 0x1CFC;
-  - the claim signature present.
+Enforces the layout in firmware/include/fuji_mailbox.h:
+  - 8192 bytes, or 8192 + k * 2048 (k = 1..31) for an APPBANK image;
+  - BCTA,UN ($1F) at image 0 and the RETC,UN ($17) interrupt guard at image 3
+    (some consoles vector a sprite interrupt through $0003);
+  - zeros in 0x1B00-0x1FFF except the "FUJI" claim at 0x1CFC, which must be present.
 Usage: checkrom.py image.bin [image2.bin ...]
 """
 
@@ -23,8 +20,10 @@ CLAIM_SIG = b"FUJI"
 def check(path: str) -> list[str]:
     with open(path, "rb") as f:
         img = f.read()
-    if len(img) != WINDOW:
-        return [f"size is {len(img)}, must be exactly {WINDOW}"]
+    extra = len(img) - WINDOW
+    if extra < 0 or extra % 2048 or extra > 31 * 2048:
+        return [f"size is {len(img)}, must be exactly {WINDOW} or "
+                f"{WINDOW} + k * 2048 (k = 1..31)"]
     problems = []
     if img[0] != 0x1F:
         problems.append(f"first byte is {img[0]:#04x}, not a BCTA,UN header")

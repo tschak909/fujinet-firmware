@@ -111,7 +111,7 @@ counts its own loop passes loses time to every transaction. So the cart keeps
 a free-running 60 Hz count at `$FC0E/$FC0F` (little-endian), from a core0
 repeating timer at 240 Hz that stores the whole halfword at once, computed
 from the microsecond clock so it can neither drift nor skip
-(`fuji_tick.h`). core0 sits in transactions with interrupts on, so the tick
+(`common/include/fuji_tick.h`). core0 sits in transactions with interrupts on, so the tick
 keeps counting through them. The client reads HI, LO, HI and retries if HI
 moved. MAME computes it from emulated time on each read.
 
@@ -260,8 +260,9 @@ against real Channel F idioms: `ST`=`17`, `LR H,DC`=`11`, `LR Q,DC`=`0E`,
 ## Licence note
 
 [`ZX-80/PicoVideocart`](https://github.com/ZX-80/PicoVideocart), an RP2040
-Channel F flashcart, is **unlicensed** — the GitHub API reports
-`"license": null` and there is no LICENSE file. This is the third time in this
-family, after PicoPAC and PiRTO II. Treat it as an electrical reference only:
-no code, no schematics. Everything protocol-related here comes from MAME's F8
-core (BSD-3-Clause) and the F8 User's Guide instead.
+Channel F flashcart, is **unlicensed**. Andrea Ottaviani's port of it,
+[`aotta/PicoVideocart`](https://github.com/aotta/PicoVideocart), is GPL-3.0.
+This firmware takes no code from either: everything protocol-related comes from
+MAME's F8 core (BSD-3-Clause) and the F8 User's Guide. The FujiNet-ChannelF-Rev0
+board (fujinet-hardware) takes its outline, key slot and shell holes from
+aotta's port.

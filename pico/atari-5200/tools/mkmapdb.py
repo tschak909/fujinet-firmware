@@ -6,8 +6,8 @@ Sources, in priority order:
   MAME hash/a5200.hsi   A13MIRRORING / TYPE16 / BOUNTYBOB hints (CC0-1.0)
   tools/corpus.tsv      No-Intro images neither file lists, decided offline
 
-Multi-chip software list entries (one ROM per socket) are matched against a
-corpus directory, when given, so the whole-image CRC the cart sees is known.
+Multi-chip entries (one ROM per socket) are matched against --corpus to get
+the whole-image CRC the cart sees.
 
   mkmapdb.py --mame ~/Workspace/mame [--corpus /tmp/a5200] -o firmware/src/a52map_db.c
   mkmapdb.py --mame ... --corpus /tmp/a5200 --classify tools/corpus.tsv
@@ -106,8 +106,7 @@ def build(args):
 
 def classify(args, db):
     a52plan = os.path.join(HERE, "..", "build", "tools", "a52plan")
-    if not os.path.exists(a52plan):
-        sys.exit("mkmapdb.py: build %s first (make -C tools)" % a52plan)
+    subprocess.run(["make", "-s", "-C", HERE], check=True)
     old = corpus_tsv(args.classify)
     rows = {}
     for path in corpus_files(args.corpus):

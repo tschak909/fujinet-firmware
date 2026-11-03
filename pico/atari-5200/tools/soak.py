@@ -10,14 +10,14 @@ a fujinet-pc of this worker's own, and check:
   - the cart swapped it in through the stub;
   - the 32K window it serves at the swap is byte-equal to the planner's
     (a52plan --view: the host build of the same a52map.c);
-  - the game is running: the screen 10 s and 30 s in is not one colour.
+  - the game is running: the screen 10 s and 30 s in is not one color.
 
 --merge runs the device with FUJINET_MERGE=1, as a 4-port console's
 clockless cart would see the bus. Results: build/soak/results[-merge].tsv,
 resumable.
 
-Each worker starts a fujinet-pc copy on its own BoIP port (9960 up) sharing
-the SD card, and never touches the one on 9995.
+Each worker runs its own fujinet-pc on BoIP port 9960 up, sharing the SD
+card; the one on 9995 is left alone.
 """
 
 import argparse
@@ -130,13 +130,7 @@ def main():
     ap.add_argument("--merge", action="store_true")
     a = ap.parse_args()
     os.makedirs(OUT, exist_ok=True)
-    os.makedirs(os.path.dirname(A52PLAN), exist_ok=True)
-    subprocess.run(["cc", "-O1", "-I", os.path.join(HERE, "firmware", "include"),
-                    "-I", os.path.join(HERE, "..", "common", "include"),
-                    "-o", A52PLAN, os.path.join(HERE, "tools", "a52plan.c"),
-                    os.path.join(HERE, "firmware", "src", "a52map.c"),
-                    os.path.join(HERE, "firmware", "src", "a52map_db.c"),
-                    os.path.join(HERE, "..", "common", "src", "fuji_crc.c")], check=True)
+    subprocess.run(["make", "-s", "-C", os.path.join(HERE, "tools")], check=True)
     rows = [l.rstrip("\n").split("\t") for l in open(os.path.join(HERE, "build", "ab", "table.tsv"))]
     res = os.path.join(OUT, "results-merge.tsv" if a.merge else "results.tsv")
     done = set()

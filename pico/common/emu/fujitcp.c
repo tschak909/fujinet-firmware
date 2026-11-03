@@ -13,8 +13,8 @@
 #include "fujimail.h"
 #include "fuji_mailbox.h"
 
-/* Must hold the largest SLIP-encoded frame: a 6-byte header plus a 1K reply
- * (FUJIMAIL_RX_MAX), doubled for SLIP's worst case, plus two delimiters. */
+/* A 6-byte header plus a 1K reply (FUJIMAIL_RX_MAX), doubled for SLIP's worst case, plus
+ * two delimiters. */
 #define RX_RAW_MAX (2 * (6 + 1024) + 2)
 
 static int fd = -1;
@@ -90,6 +90,13 @@ void fujitcp_abort(void)
         shutdown(fd, SHUT_RDWR);
 }
 
+static void (*idle_fn)(void);
+
+void fujitcp_set_idle(void (*hook)(void))
+{
+    idle_fn = hook;
+}
+
 /* Read one complete SLIP frame (two 0xC0 delimiters) or time out. */
 static fb_status_t read_frame(uint8_t *buf, size_t cap, size_t *out_len,
                               int secs)
@@ -111,13 +118,25 @@ static fb_status_t read_frame(uint8_t *buf, size_t cap, size_t *out_len,
                + (deadline.tv_usec - now.tv_usec);
         if (remain <= 0)
             return FB_ETIMEOUT;
+        if (idle_fn && remain > 2000L)
+            remain = 2000L;             /* wake for the idle hook */
         tv.tv_sec = remain / 1000000L;
         tv.tv_usec = remain % 1000000L;
 
         FD_ZERO(&rf);
         FD_SET(fd, &rf);
-        if (select(fd + 1, &rf, NULL, NULL, &tv) <= 0)
+        switch (select(fd + 1, &rf, NULL, NULL, &tv)) {
+        case 0:
+            if (idle_fn) {
+                idle_fn();
+                continue;           /* the deadline decides */
+            }
             return FB_ETIMEOUT;
+        case -1:
+            return FB_ETIMEOUT;
+        default:
+            break;
+        }
 
         while (n < cap) {
             unsigned char c;
@@ -165,9 +184,7 @@ fb_status_t fujitcp_transact(uint8_t device, uint8_t command,
             return st;
         if (!fujibus_parse_reply(raw, rawlen, reply))
             return FB_EBADFRAME;
-        /* Push frames arrive interleaved with the reply we are waiting for;
-         * consuming one proves the link is alive, so the deadline restarts
-         * rather than counting down. */
+        /* A push frame proves the link alive, so the deadline restarts. */
         if (!fujimail_inbound(reply))
             return FB_OK;
     }

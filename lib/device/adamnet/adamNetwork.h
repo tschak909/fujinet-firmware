@@ -21,10 +21,12 @@ protected:
     } statusByte;
 
     AdamNetStatus deviceStatus() override;
+    bool reportsCommandFailed() override { return true; }
     void adamnet_control_send(const FujiAdamPacket &packet) override {
         NDevice::processCommand(packet);
     }
     void adamnet_control_receive() override;
+    void adamnet_after_reset() override;
 
     // Adam uses variable length packets, no length parameter is passed
     void fujidev_write(const FUJI_COMMAND_PACKET &packet) override;

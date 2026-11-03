@@ -120,17 +120,19 @@ void systemBus::transaction_error()
         _start_time = GET_TIMESTAMP();
         sendNakPacket();
     }
+    else if (_activePacket->type() == APT::MN_SEND)
+        _activeDev->_last_command = error_is_true(true);
     _transaction_state = TRANS_STATE::INVALID;
 }
 
-success_is_true systemBus::transaction_get(void *data, size_t len)
+size_result_t systemBus::transaction_get_length(void *data, size_t len)
 {
     assert(_transaction_state == TRANS_STATE::WILL_GET);
     _transaction_state = TRANS_STATE::DID_GET;
     len = std::min(len, _activePacket->data()->size());
     std::copy(_activePacket->data()->begin(), _activePacket->data()->begin() + len,
               static_cast<uint8_t *>(data));
-    RETURN_SUCCESS_AS_TRUE();
+    RETURN_SIZE(len);
 }
 
 void systemBus::transaction_send(const void *data, size_t len, bool err)
@@ -376,9 +378,14 @@ void systemBus::_adamnet_dispatch(const FujiAdamPacket &packet)
     switch (packet.type())
     {
     case APT::MN_STATUS:
+    {
         // Get device capabilities/check if it is alive
-        sendStatusPacket(_activeDev->deviceStatus());
+        AdamNetStatus status = _activeDev->deviceStatus();
+        if (_activeDev->reportsCommandFailed() && _activeDev->_last_command.is_error())
+            status.status |= ADAMNET_STATUS_COMMAND_FAILED;
+        sendStatusPacket(status);
         break;
+    }
 
     case APT::MN_CLR:
         // Fetch the data from a previous read()/readBlock() request
@@ -395,6 +402,7 @@ void systemBus::_adamnet_dispatch(const FujiAdamPacket &packet)
 
     case APT::MN_SEND:
         // write() or writeBlock()
+        _activeDev->_last_command = error_is_true(false);
         _activeDev->adamnet_control_send(packet);
         break;
 
@@ -432,6 +440,13 @@ void systemBus::_adamnet_process_queue()
 
 void systemBus::service()
 {
+    if (_reset_pending)
+    {
+        _reset_pending = false;
+        for (auto devicep : _daisyChain)
+            devicep->adamnet_after_reset();
+    }
+
 #ifdef ESP_PLATFORM
     // process queue messages (disk swap)
     _adamnet_process_queue();
@@ -550,6 +565,7 @@ void systemBus::reset()
 {
     for (auto devicep : _daisyChain)
         devicep->reset();
+    _reset_pending = true;
 }
 
 #endif /* BUILD_ADAM */

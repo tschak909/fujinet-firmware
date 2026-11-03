@@ -18,6 +18,8 @@ using namespace fujinet;
 
 #define HTTPCLIENT_WAIT_FOR_CONSUMER_TASK 20000 // 20s
 #define HTTPCLIENT_WAIT_FOR_HTTP_TASK 20000     // 20s
+// perform_subtask runs the TLS handshake; TLS 1.3 to an RSA server peaked at 4156 bytes (S3)
+#define HTTPCLIENT_SUBTASK_STACK 6144
 
 const char *webdav_depths[] = {"0", "1", "infinity"};
 
@@ -105,6 +107,11 @@ int fnHttpClient::available()
 #endif
         return 0;
     }
+
+    // No-body responses may still carry representation Content-Length metadata.
+    int status = esp_http_client_get_status_code(_handle);
+    if (status == 204 || status == 304)
+        return 0;
 
     int result = 0;
     int len = -1;
@@ -510,13 +517,17 @@ int fnHttpClient::_perform()
 
     // Start a new task to perform the http client work
     _delete_subtask_if_running();
+    // Drop any notification an earlier subtask left behind, or the wait below takes it
+    ulTaskNotifyTake(pdTRUE, 0);
     // Task stacks come from internal DRAM only, so this fails under internal-heap
     // pressure. Unchecked, that surfaces 20s later as an indistinguishable timeout.
-    if (xTaskCreate(_perform_subtask, "perform_subtask", 4096, this, 5, &_taskh_subtask) != pdPASS)
+    if (xTaskCreate(_perform_subtask, "perform_subtask", HTTPCLIENT_SUBTASK_STACK, this, 5,
+                    &_taskh_subtask) != pdPASS)
     {
         _taskh_subtask = nullptr;
-        Debug_printv("could not create perform_subtask (4096 byte stack), free internal/total heap: %lu/%lu",
-                     esp_get_free_internal_heap_size(), esp_get_free_heap_size());
+        Debug_printv("could not create perform_subtask (%d byte stack), free internal/total heap: %lu/%lu",
+                     HTTPCLIENT_SUBTASK_STACK, esp_get_free_internal_heap_size(),
+                     esp_get_free_heap_size());
         return -1;
     }
 #ifdef VERBOSE_HTTP

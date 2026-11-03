@@ -97,32 +97,36 @@ void systemBus::transaction_success()
 {
   assert(_transaction_state == TRANS_STATE::NO_GET
          || _transaction_state == TRANS_STATE::DID_GET);
+  _transaction_response.assign(1, TRANSACTION_STATUS_OK);
   _transaction_state = TRANS_STATE::INVALID;
 }
 
 void systemBus::transaction_error()
 {
+  _transaction_response.assign(1, TRANSACTION_STATUS_ERROR);
   _transaction_state = TRANS_STATE::INVALID;
-  // FIXME - signal error somehow
 }
 
-success_is_true systemBus::transaction_get(void *data, size_t len)
+size_result_t systemBus::transaction_get_length(void *data, size_t len)
 {
     assert(_transaction_state == TRANS_STATE::WILL_GET);
     assert(_activePacket);
     assert(data);
     _transaction_state = TRANS_STATE::DID_GET;
+    if (!_activePacket->data().has_value())
+        RETURN_SIZE(0);
     len = std::min(len, _activePacket->data()->size());
     std::copy(_activePacket->data()->begin(), _activePacket->data()->begin() + len,
               static_cast<uint8_t *>(data));
-    RETURN_SUCCESS_AS_TRUE();
+    RETURN_SIZE(len);
 }
 
 void systemBus::transaction_send(const void *data, size_t len, bool err)
 {
     assert(_transaction_state == TRANS_STATE::NO_GET);
     const uint8_t *ptr = reinterpret_cast<const uint8_t*>(data);
-    _transaction_response.assign(ptr, ptr + len);
+    _transaction_response.assign(1, err ? TRANSACTION_STATUS_ERROR : TRANSACTION_STATUS_OK);
+    _transaction_response.insert(_transaction_response.end(), ptr, ptr + len);
     Debug_printv("response:\r\n%s",
                  util_hexdump(_transaction_response.data(),
                               _transaction_response.size()).c_str());

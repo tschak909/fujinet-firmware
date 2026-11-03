@@ -3,15 +3,9 @@
 #
 # Usage: ./apply.sh /path/to/mame
 #
-# Copies the device model (fujinet.cpp/h, common's fujitcp.c/h) and the cartridge
-# firmware's own protocol sources (fujimail, fujibus, arcmap, and their
-# headers -- MAME then runs the code the cartridge actually ships) into
-# src/devices/bus/arcadia/, and makes the only two shared-file edits:
-# the bus.lua file list and the cart-slot option in arcadia.cpp.
-# Idempotent: run it again after editing any source here.
-#
-# Afterwards: make -C /path/to/mame -j$(nproc) REGENIE=1 as usual
-# (REGENIE=1 whenever apply.sh says bus.lua changed).
+# Copies the device and the firmware's own protocol sources into src/devices/bus/arcadia/,
+# so MAME runs the code the cart ships, and edits bus.lua and arcadia.cpp. Idempotent.
+# Then: make -C /path/to/mame -j$(nproc) REGENIE=1 (REGENIE=1 whenever bus.lua changed).
 
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -26,12 +20,11 @@ DRIVER="$MAME/src/mame/arcadia/arcadia.cpp"
 
 graft "$BUSDIR" fujinet.cpp fujinet.h
 graft_common "$BUSDIR" fujitcp fujimail fujibus fuji_mailbox_proto fuji_mailbox_check
-graft "$BUSDIR" ../firmware/src/arcmap.c ../firmware/include/{arcmap,fuji_mailbox}.h
+graft "$BUSDIR" ../firmware/src/arcmap.c ../firmware/include/{arcmap,arcapp,fuji_mailbox}.h
 graft_fujins "$BUSDIR" arcadia
 graft_lua arcadia rom.h
 
-# arcadia.cpp: include + selectable slot option, once. Plain option_add,
-# unlike the internal ROM types, so -cartslot fujinet works from the CLI.
+# Plain option_add, unlike the internal ROM types, so -cartslot fujinet works from the CLI.
 if ! grep -q "ARCADIA_ROM_FUJINET" "$DRIVER"; then
     python3 - "$DRIVER" <<'EOF'
 import sys
