@@ -14,7 +14,7 @@ namespace
 {
 
 #define ROM_TEST_FILE "drivewire_rom_mount_test.ccc"
-#define CART_8K (8 * 1024)
+#define CART_8K 8_kB
 
 std::string written_bytes()
 {
@@ -159,6 +159,40 @@ TEST_CASE("every cartridge size mounts")
         drivewireDisk disk;
         CHECK(disk.mount(&file, ROM_TEST_FILE, size, DISK_ACCESS_MODE_READ) == MEDIATYPE_ROM);
         CHECK(written_bytes() == std::string(image.begin(), image.end()));
+        check_closed_once(disk, file);
+    }
+}
+
+TEST_CASE("a caller-given ROM type still needs a .ccc or .rom")
+{
+    bus.reset();
+    MemFile file(make_image(CART_8K));
+
+    drivewireDisk disk;
+    CHECK(disk.mount(&file, "cart.dat", CART_8K, DISK_ACCESS_MODE_READ, MEDIATYPE_ROM)
+          == MEDIATYPE_UNKNOWN);
+    CHECK(bus.sent.empty());
+    check_nothing_mounted(disk, file);
+    check_closed_once(disk, file);
+}
+
+TEST_CASE("a size no cartridge has is refused before anything is sent")
+{
+    size_t sizes[] = {
+        CART_8K / 2, CART_8K - 1, CART_8K + 1, CART_8K + 1024, CART_8K * 3 / 2,
+        CART_8K * 3, CART_8K * 5, CART_8K * 16 + 1, CART_8K * 32,
+    };
+    for (size_t size : sizes)
+    {
+        CAPTURE(size);
+        bus.reset();
+        MemFile file(make_image(size));
+
+        drivewireDisk disk;
+        CHECK(disk.mount(&file, ROM_TEST_FILE, size, DISK_ACCESS_MODE_READ)
+              == MEDIATYPE_UNKNOWN);
+        CHECK(bus.sent.empty());
+        check_nothing_mounted(disk, file);
         check_closed_once(disk, file);
     }
 }

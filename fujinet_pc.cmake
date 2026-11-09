@@ -52,8 +52,15 @@ elseif(FUJINET_TARGET STREQUAL "ADAM")
     set(FUJINET_BUILD_BOARD fujinet-pc-adam)
     # fujinet.build_bus
     set(FUJINET_BUILD_BUS ADAMNET)
+elseif(FUJINET_TARGET STREQUAL "IEC")
+    # fujinet.build_platform
+    set(FUJINET_BUILD_PLATFORM BUILD_IEC)
+    # fujinet.build_board (used by build_webui.py)
+    set(FUJINET_BUILD_BOARD fujinet-pc-iec)
+    # fujinet.build_bus
+    set(FUJINET_BUILD_BUS IEC)
 else()
-    message(FATAL_ERROR "Invalid target: '${FUJINET_TARGET}'. Please choose from 'RS232', 'ATARI', 'APPLE', 'COCO', 'LYNX', or 'ADAM'.")
+    message(FATAL_ERROR "Invalid target: '${FUJINET_TARGET}'. Please choose from 'RS232', 'ATARI', 'APPLE', 'COCO', 'LYNX', 'ADAM', or 'IEC'.")
 endif()
 
 if(FUJINET_TARGET STREQUAL "APPLE")
@@ -332,9 +339,21 @@ set(SOURCES src/main.cpp
     lib/device/netstream.h
     lib/device/siocpm.h
     lib/modem-sniffer/modem-sniffer.h lib/modem-sniffer/modem-sniffer.cpp
-    lib/media/media.h
+    lib/media/media.h lib/media/media.cpp
     # Matches the ESP builds, which glob lib/media/*.cpp into every target
     lib/media/IMDImage.h lib/media/IMDImage.cpp
+    lib/media/rom/ROMMedia.h lib/media/rom/ROMMedia.cpp lib/media/rom/ROMFactory.h
+    lib/media/rom/Atari2600ROM.h lib/media/rom/Atari2600ROM.cpp
+    lib/media/rom/Atari5200ROM.h lib/media/rom/Atari5200ROM.cpp
+    lib/media/rom/Atari7800ROM.h lib/media/rom/Atari7800ROM.cpp
+    lib/media/rom/ChannelFROM.h lib/media/rom/ChannelFROM.cpp
+    lib/media/rom/CoCoCartROM.h lib/media/rom/CoCoCartROM.cpp
+    lib/media/rom/ColecoROM.h lib/media/rom/ColecoROM.cpp
+    lib/media/rom/IntellicartROM.h lib/media/rom/IntellicartROM.cpp
+    lib/media/rom/IntellivisionROM.h lib/media/rom/IntellivisionROM.cpp
+    lib/media/rom/NESROM.h lib/media/rom/NESROM.cpp
+    lib/media/rom/SegaMasterROM.h lib/media/rom/SegaMasterROM.cpp
+    lib/media/rom/StudioIIROM.h lib/media/rom/StudioIIROM.cpp
     lib/encoding/base64.h lib/encoding/base64.cpp
     lib/encoding/hash.h lib/encoding/hash.cpp
     lib/qrcode/qrcode.h lib/qrcode/qrcode.c
@@ -457,7 +476,6 @@ if(FUJINET_TARGET STREQUAL "COCO")
     lib/media/drivewire/mediaTypeDSK.h lib/media/drivewire/mediaTypeDSK.cpp
     lib/media/drivewire/mediaTypeMRM.h lib/media/drivewire/mediaTypeMRM.cpp
     lib/media/drivewire/mediaTypeVDK.h lib/media/drivewire/mediaTypeVDK.cpp
-    lib/media/drivewire/mediaTypeROM.h lib/media/drivewire/mediaTypeROM.cpp
     lib/media/drivewire/mediaTypeCASDSK.h lib/media/drivewire/mediaTypeCASDSK.cpp
     lib/media/drivewire/casSource.h lib/media/drivewire/casSourceFile.h
     lib/media/drivewire/casReader.h lib/media/drivewire/casReader.cpp
@@ -517,7 +535,6 @@ if(FUJINET_TARGET STREQUAL "RS232")
     lib/media/rs232/diskTypeAltair.h lib/media/rs232/diskTypeAltair.cpp
     lib/media/rs232/diskTypeImg.h lib/media/rs232/diskTypeImg.cpp
     lib/media/rs232/diskTypeIMD.h lib/media/rs232/diskTypeIMD.cpp
-    lib/media/rs232/diskTypeROM.h lib/media/rs232/diskTypeROM.cpp
 
     lib/device/rs232/rs232Clock.cpp lib/device/rs232/rs232Clock.h
     lib/device/rs232/disk.cpp lib/device/rs232/disk.h
@@ -556,6 +573,52 @@ if(FUJINET_TARGET STREQUAL "LYNX")
     lib/printer-emulator/coleco_printer.h lib/printer-emulator/coleco_printer.cpp
 
     components/lz4/lib/lz4.h components/lz4/lib/lz4.c
+    )
+endif()
+
+if(FUJINET_TARGET STREQUAL "IEC")
+    # Appended after the platform-dispatch directories, as for LYNX and ADAM, so shared names
+    # such as printer.h still resolve to the dispatch headers.
+    list(APPEND INCLUDE_DIRS lib/bus/iec lib/device/iec lib/meatloaf lib/media/cbm)
+
+    list(APPEND SOURCES
+
+    lib/bus/iec/iec.h lib/bus/iec/iec.cpp
+    lib/bus/iec/IECConfig.h lib/bus/iec/IEChost.h
+    lib/bus/iec/IECBusHandler.h lib/bus/iec/IECBusHandler.cpp
+    lib/bus/iec/IECDevice.h lib/bus/iec/IECDevice.cpp
+    lib/bus/iec/IECFileDevice.h lib/bus/iec/IECFileDevice.cpp
+    lib/bus/iec/FujiIECPacket.h lib/bus/iec/FujiIECPacket.cpp
+    lib/bus/iec/virtualDevice.h lib/bus/iec/virtualDevice.cpp
+    lib/bus/iec/NetIEC.h lib/bus/iec/NetIEC.cpp
+    lib/hardware/BoIPChannel.h lib/hardware/BoIPChannel.cpp
+
+    lib/media/cbm/mediaType.h lib/media/cbm/mediaType.cpp
+    lib/media/cbm/BlankImage.h lib/media/cbm/BlankImage.cpp
+
+    # Meatloaf without its HTTP, TNFS, CommodoreServer and ML: file systems, which need ESP-IDF
+    lib/meatloaf/meatloaf.h lib/meatloaf/meatloaf.cpp
+    lib/meatloaf/meat_media.h lib/meatloaf/meat_media.cpp
+    lib/meatloaf/meat_buffer.h
+    lib/meatloaf/device/flash.h lib/meatloaf/device/flash.cpp
+    lib/meatloaf/device/fnfile.h lib/meatloaf/device/fnfile.cpp
+    lib/meatloaf/disk/d64.h lib/meatloaf/disk/d64.cpp
+    lib/meatloaf/file/p00.h lib/meatloaf/file/p00.cpp
+    lib/meatloaf/tape/t64.h lib/meatloaf/tape/t64.cpp
+    lib/meatloaf/tape/tcrt.h lib/meatloaf/tape/tcrt.cpp
+    lib/meatloaf/wrappers/iec_buffer.h lib/meatloaf/wrappers/iec_buffer.cpp
+
+    lib/printer-emulator/commodoremps803.h lib/printer-emulator/commodoremps803.cpp
+
+    lib/device/iec/iecFuji.h lib/device/iec/iecFuji.cpp
+    lib/device/iec/drive.h lib/device/iec/drive.cpp
+    lib/device/iec/iecNetwork.h lib/device/iec/iecNetwork.cpp
+    lib/device/iec/iecClock.h lib/device/iec/iecClock.cpp
+    lib/device/iec/printer.h lib/device/iec/printer.cpp
+    lib/device/iec/printerlist.h lib/device/iec/printerlist.cpp
+    lib/device/iec/modem.h lib/device/iec/modem.cpp
+    lib/device/iec/cpm.h lib/device/iec/cpm.cpp
+
     )
 endif()
 

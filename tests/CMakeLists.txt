@@ -18,6 +18,26 @@ target_link_libraries(fujibuspacket_tests PRIVATE
 add_test(NAME fujibuspacket_tests COMMAND fujibuspacket_tests)
 
 # ------------------------------------------------------------------------------
+# lib/bus/iec/FujiIECPacket: a command's params and data, with and without a
+# payload. BUILD_IEC is the whole-file guard on the unit under test.
+# ------------------------------------------------------------------------------
+add_executable(fujiiecpacket_tests
+    FujiIECPacketTests.cpp
+    ${CMAKE_SOURCE_DIR}/lib/bus/iec/FujiIECPacket.cpp
+)
+
+target_compile_definitions(fujiiecpacket_tests PRIVATE BUILD_IEC)
+
+target_include_directories(fujiiecpacket_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/include/
+    ${CMAKE_SOURCE_DIR}/lib/
+    ${CMAKE_SOURCE_DIR}/lib/bus/
+    ${CMAKE_SOURCE_DIR}/components_pc/
+)
+
+add_test(NAME fujiiecpacket_tests COMMAND fujiiecpacket_tests)
+
+# ------------------------------------------------------------------------------
 # lib/bus/DaisyChain: device-ID rotation behind the disk swap. Pure code; the
 # test supplies its own empty virtualDevice.
 # ------------------------------------------------------------------------------
@@ -314,6 +334,28 @@ endif()
 add_test(NAME mediatypeimg_tests COMMAND mediatypeimg_tests)
 
 # ------------------------------------------------------------------------------
+# The Commodore blank images NEW DISK writes. BUILD_IEC is the whole-file guard on
+# the media sources, and mediaType.cpp supplies the extension check. See imdimage_tests
+# above for UNIT_TESTS/FNIO_IS_STDIO.
+# ------------------------------------------------------------------------------
+add_executable(blankimage_tests
+    BlankImageTests.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/cbm/BlankImage.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/cbm/mediaType.cpp
+)
+
+target_compile_definitions(blankimage_tests PRIVATE BUILD_IEC UNIT_TESTS FNIO_IS_STDIO)
+
+target_include_directories(blankimage_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/include/      # debug.h, global_types.h
+    ${CMAKE_SOURCE_DIR}/lib/FileSystem/
+    ${CMAKE_SOURCE_DIR}/lib/media/cbm/
+    ${CMAKE_SOURCE_DIR}/components_pc/
+)
+
+add_test(NAME blankimage_tests COMMAND blankimage_tests)
+
+# ------------------------------------------------------------------------------
 # file_size_t in include/global_types.h: what it converts to, and to().
 # ------------------------------------------------------------------------------
 add_executable(file_size_tests FileSizeTests.cpp)
@@ -589,7 +631,7 @@ if(FUJINET_TARGET STREQUAL "ATARI")
     ${CMAKE_SOURCE_DIR}/lib/fnxml/
     ${CMAKE_SOURCE_DIR}/components_pc/
     ${CMAKE_SOURCE_DIR}/components_pc/libssh/include/
-    ${CMAKE_SOURCE_DIR}/build/components_pc/libssh/include/
+    ${CMAKE_BINARY_DIR}/components_pc/libssh/include/
     ${CMAKE_SOURCE_DIR}/components_pc/cJSON/
     ${CMAKE_SOURCE_DIR}/components_pc/mongoose/
     ${CMAKE_SOURCE_DIR}/components/gumbo-query/
@@ -663,7 +705,7 @@ if(FUJINET_TARGET STREQUAL "ATARI")
     ${CMAKE_SOURCE_DIR}/lib/fnxml/
     ${CMAKE_SOURCE_DIR}/components_pc/
     ${CMAKE_SOURCE_DIR}/components_pc/libssh/include/
-    ${CMAKE_SOURCE_DIR}/build/components_pc/libssh/include/
+    ${CMAKE_BINARY_DIR}/components_pc/libssh/include/
     ${CMAKE_SOURCE_DIR}/components_pc/cJSON/
     ${CMAKE_SOURCE_DIR}/components_pc/mongoose/
     ${CMAKE_SOURCE_DIR}/components/gumbo-query/
@@ -707,7 +749,7 @@ if(FUJINET_TARGET STREQUAL "ADAM")
     ${CMAKE_SOURCE_DIR}/lib/http/
     ${CMAKE_SOURCE_DIR}/lib/TNFSlib/
     ${CMAKE_SOURCE_DIR}/components_pc/libssh/include/
-    ${CMAKE_SOURCE_DIR}/build/components_pc/libssh/include/
+    ${CMAKE_BINARY_DIR}/components_pc/libssh/include/
     ${CMAKE_SOURCE_DIR}/components_pc/mongoose/
     ${CMAKE_SOURCE_DIR}/components/gumbo-query/
     ${CMAKE_SOURCE_DIR}/lib/network-protocol/
@@ -762,7 +804,7 @@ set(ROM_MOUNT_TEST_INCLUDES
   ${CMAKE_SOURCE_DIR}/lib/http/
   ${CMAKE_SOURCE_DIR}/lib/TNFSlib/
   ${CMAKE_SOURCE_DIR}/components_pc/libssh/include/
-  ${CMAKE_SOURCE_DIR}/build/components_pc/libssh/include/
+  ${CMAKE_BINARY_DIR}/components_pc/libssh/include/
   ${CMAKE_SOURCE_DIR}/components_pc/mongoose/
   ${CMAKE_SOURCE_DIR}/components/gumbo-query/
   ${CMAKE_SOURCE_DIR}/lib/network-protocol/
@@ -787,7 +829,9 @@ if(FUJINET_TARGET STREQUAL "COCO")
     ${CMAKE_SOURCE_DIR}/lib/device/drivewire/disk.cpp
     ${CMAKE_SOURCE_DIR}/lib/FileSystem/fnFile.cpp
     ${CMAKE_SOURCE_DIR}/lib/media/drivewire/mediaType.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/drivewire/mediaTypeROM.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/media.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/rom/ROMMedia.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/rom/CoCoCartROM.cpp
     ${CMAKE_SOURCE_DIR}/lib/media/drivewire/mediaTypeDSK.cpp
     ${CMAKE_SOURCE_DIR}/lib/media/drivewire/mediaTypeMRM.cpp
     ${CMAKE_SOURCE_DIR}/lib/media/drivewire/mediaTypeVDK.cpp
@@ -810,6 +854,27 @@ if(FUJINET_TARGET STREQUAL "COCO")
     target_link_libraries(drivewire_rom_mount_tests PRIVATE ws2_32)
   endif()
   add_test(NAME drivewire_rom_mount_tests COMMAND drivewire_rom_mount_tests)
+
+  # The Media root class's helpers, through the same in-memory fujiHost.
+  add_executable(media_tests
+    MediaTests.cpp
+    romMountStubs.cpp
+    channelStubs.cpp
+    ${CMAKE_SOURCE_DIR}/lib/FileSystem/fnFile.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/media.cpp
+    ${CMAKE_SOURCE_DIR}/lib/bus/FujiBusPacket.cpp
+    ${CMAKE_SOURCE_DIR}/lib/bus/DaisyChain.cpp
+  )
+  target_compile_definitions(media_tests PRIVATE UNIT_TESTS PINMAP_FUJIVERSAL_DRIVEWIRE)
+  target_include_directories(media_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/lib/bus/drivewire/
+    ${CMAKE_SOURCE_DIR}/lib/media/drivewire/
+    ${ROM_MOUNT_TEST_INCLUDES}
+  )
+  if(WIN32)
+    target_link_libraries(media_tests PRIVATE ws2_32)
+  endif()
+  add_test(NAME media_tests COMMAND media_tests)
 endif()
 
 if(FUJINET_TARGET STREQUAL "RS232")
@@ -824,7 +889,18 @@ if(FUJINET_TARGET STREQUAL "RS232")
     ${CMAKE_SOURCE_DIR}/lib/media/rs232/diskTypeAltair.cpp
     ${CMAKE_SOURCE_DIR}/lib/media/rs232/diskTypeIMD.cpp
     ${CMAKE_SOURCE_DIR}/lib/media/rs232/diskTypeImg.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/rs232/diskTypeROM.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/media.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/rom/ROMMedia.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/rom/Atari2600ROM.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/rom/Atari5200ROM.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/rom/Atari7800ROM.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/rom/ChannelFROM.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/rom/ColecoROM.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/rom/IntellicartROM.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/rom/IntellivisionROM.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/rom/NESROM.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/rom/SegaMasterROM.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/rom/StudioIIROM.cpp
     ${CMAKE_SOURCE_DIR}/lib/bus/FujiBusPacket.cpp
     ${CMAKE_SOURCE_DIR}/lib/bus/DaisyChain.cpp
   )
@@ -1130,6 +1206,54 @@ if(WIN32)
 endif()
 
 add_test(NAME fs_protocol_tests COMMAND fs_protocol_tests)
+
+# ------------------------------------------------------------------------------
+# When the N: HTTP protocol sends a request, and how often; http_harness/ stands
+# in for the HTTP client and records each request.
+# ------------------------------------------------------------------------------
+add_executable(http_protocol_tests
+    HTTPProtocolTests.cpp
+    ${CMAKE_SOURCE_DIR}/lib/network-protocol/HTTP.cpp
+    ${CMAKE_SOURCE_DIR}/lib/network-protocol/FS.cpp
+    ${CMAKE_SOURCE_DIR}/lib/network-protocol/Protocol.cpp
+    ${CMAKE_SOURCE_DIR}/lib/network-protocol/TCP.cpp      # Protocol.cpp casts to it
+    ${CMAKE_SOURCE_DIR}/lib/webdav/WebDAV.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/peoples_url_parser.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/string_utils.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/utils.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/U8Char.cpp
+    ${CMAKE_SOURCE_DIR}/lib/utils/punycode.cpp
+    ${CMAKE_SOURCE_DIR}/lib/compat/compat_inet.c
+    ${CMAKE_SOURCE_DIR}/lib/compat/compat_gettimeofday.c
+)
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+  target_sources(http_protocol_tests PRIVATE
+      ${CMAKE_SOURCE_DIR}/lib/compat/strlcpy.c
+      ${CMAKE_SOURCE_DIR}/lib/compat/strlcat.c
+  )
+endif()
+
+target_include_directories(http_protocol_tests BEFORE PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests/http_harness/   # first: replaces mgHttpClient.h
+    ${CMAKE_SOURCE_DIR}/tests/tcp_harness/    # replaces fnTcpClient.h, fnTcpServer.h, bus.h
+    ${CMAKE_SOURCE_DIR}/lib/network-protocol/
+    ${CMAKE_SOURCE_DIR}/lib/webdav/
+    ${CMAKE_SOURCE_DIR}/lib/device/fujiDevice/
+    ${CMAKE_SOURCE_DIR}/lib/utils/
+    ${CMAKE_SOURCE_DIR}/lib/sam/
+    ${CMAKE_SOURCE_DIR}/lib/compat/
+    ${CMAKE_SOURCE_DIR}/include/
+    ${CMAKE_SOURCE_DIR}/components_pc/        # doctest
+    ${CMAKE_SOURCE_DIR}/components_pc/libsmb2/include/   # asprintf.h on Windows
+    ${MBEDTLS_INCLUDE_DIR}
+)
+target_compile_definitions(http_protocol_tests PRIVATE UNIT_TESTS)
+target_link_libraries(http_protocol_tests PRIVATE expat ${CRYPTO_LIBS})
+if(WIN32)
+  target_link_libraries(http_protocol_tests PRIVATE ws2_32 bcrypt)
+endif()
+
+add_test(NAME http_protocol_tests COMMAND http_protocol_tests)
 
 # ------------------------------------------------------------------------------
 # The N: SMB protocol (lib/network-protocol/SMB.cpp) and FileSystemSMB

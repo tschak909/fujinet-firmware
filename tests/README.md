@@ -8,6 +8,7 @@ Host-side unit tests and policy checks for the FujiNet-PC build. ctest runs them
 |---|---|
 | `CMakeLists.txt` | One `add_executable` and `add_test` pair per test; each links only the unit under test, never the `fujinet` executable |
 | `FujiBusPacketTests.cpp` | `lib/bus/FujiBusPacket.cpp` SLIP framing (`fujibuspacket_tests`) |
+| `FujiIECPacketTests.cpp` | `lib/bus/iec/FujiIECPacket.cpp` params and data, and a command sent with no payload (`fujiiecpacket_tests`; built with `BUILD_IEC`) |
 | `DaisyChainTests.cpp` | `lib/bus/DaisyChain.cpp` device-ID rotation behind the disk swap (`daisychain_tests`) |
 | `FnSanitizeTests.cpp` | `lib/fntext/fn_sanitize.cpp` entity decoding and UTF-8 folding (`fn_sanitize_tests`) |
 | `PeoplesUrlParserTests.cpp` | `lib/utils/peoples_url_parser.cpp` query and fragment splitting, and `getFilePath()` (`url_parser_tests`) |
@@ -20,6 +21,7 @@ Host-side unit tests and policy checks for the FujiNet-PC build. ctest runs them
 | `MediaTypeIMDTests.cpp` | `lib/media/rs232/diskTypeIMD.cpp` adapter, and `diskType.cpp` finding an IMD by its contents (`mediatypeimd_tests`; built with `BUILD_RS232`) |
 | `MediaTypeAltairTests.cpp` | `lib/media/rs232/diskTypeAltair.cpp` adapter (`mediatypealtair_tests`; built with `BUILD_RS232`) |
 | `MediaTypeImgTests.cpp` | `lib/media/rs232/diskTypeImg.cpp` blank image from `create()` (`mediatypeimg_tests`; built with `BUILD_RS232`) |
+| `BlankImageTests.cpp` | `lib/media/cbm/BlankImage.cpp`: the formatted D64, D71 and D81 and the raw image NEW DISK writes on IEC, and the sizes it refuses (`blankimage_tests`; built with `BUILD_IEC`) |
 | `FileSizeTests.cpp` | `file_size_t` in `include/global_types.h`: the types it converts to without a cast, and `to()` refusing -1 and a size that doesn't fit (`file_size_tests`) |
 | `MediaTypeAdamTests.cpp` | `lib/media/adam/` DDP, DSK and ROM 0-block mounts and block bounds (`mediatypeadam_tests`; built with `BUILD_ADAM`; not on Windows) |
 | `MediaType2MGTests.cpp` | `lib/media/apple/mediaType2MG.cpp` and `mediaTypePO.cpp` mounts, 2MG detection, the high-score marker and the 2MG header NEW DISK writes (`mediatype2mg_tests`; built with `BUILD_APPLE`) |
@@ -32,8 +34,9 @@ Host-side unit tests and policy checks for the FujiNet-PC build. ctest runs them
 | `sioNetworkStubs.cpp`, `sioNetworkStubs.h` | Link-time stubs shared by `sio_dstats_tests`, `sio_network_tests` and `ndevice_tests`; the `systemBus` stubs record into `bus` |
 | `AdamNetworkReceiveTests.cpp`, `adamNetworkReceiveStubs.cpp`, `adamNetworkReceiveStubs.h` | `lib/device/adamnet/adamNetwork.cpp` RECEIVE sending at most 1024 bytes and keeping the rest; the stubs record bus replies (`adam_network_receive_tests`; ADAM target only) |
 | `DrivewireROMMountTests.cpp` | `lib/device/drivewire/disk.cpp` ROM mounts: the blocks sent to the cartridge MCU, what `mount()` returns when the bus fails, the drive left with nothing mounted, and the handle closed once (`drivewire_rom_mount_tests`; COCO target only, built with `PINMAP_FUJIVERSAL_DRIVEWIRE`) |
-| `RS232ROMMountTests.cpp` | `lib/device/rs232/disk.cpp` ROM mounts: the image and `.cfg` mapper streams sent to the cartridge MCU, the aborting CLOSE on failure, the drive left with nothing mounted, and every handle closed once (`rs232_rom_mount_tests`; RS232 target only) |
-| `romMountStubs.cpp`, `romMountStubs.h` | Link-time stubs shared by the two ROM mount tests, built against each target's `systemBus`: FujiBus packets are recorded in `bus` and replies scripted, `MemFile` is an in-memory handle that counts closes, and `fujiHost` serves files from `host_files` |
+| `RS232ROMMountTests.cpp` | `lib/device/rs232/disk.cpp` ROM mounts through the `lib/media/rom/` formats: which images each console accepts, the image and `.cfg` mapper streams sent to the cartridge MCU, the aborting CLOSE on failure, the drive left with nothing mounted, and every handle closed once (`rs232_rom_mount_tests`; RS232 target only) |
+| `MediaTests.cpp` | The `lib/media/media.h` `Media` root class: `open()` rewinding the handle and passing extra arguments on, `matchExtension()`, `findSibling()` and `contentsOfHostFile()` (`media_tests`; COCO target only) |
+| `romMountStubs.cpp`, `romMountStubs.h` | Link-time stubs shared by the two ROM mount tests and `media_tests`, built against each target's `systemBus`: FujiBus packets are recorded in `bus` and replies scripted, `MemFile` is an in-memory handle that counts closes, and `fujiHost` serves files from `host_files` under the prefix set there |
 | `channelStubs.cpp` | Empty `TTYChannel` and `COMChannel` stubs for the tests above, which link a bus but never open a serial port |
 | `NQueryOutputModeTests.cpp`, `NParserReadTests.cpp` | `NParser` and `XMLParser` query output modes and short reads (`nquery_output_mode_tests`; ATARI target only) |
 | `MgHttpCompletionProbe.cpp`, `mg_http_completion_test.py` | Real PC HTTP fixed-length/chunked completion, redirect connection isolation, two-request reuse, body/status/EOF and hostname lookup through the system resolver (`mg_http_completion_tests`; POSIX hosts) |
@@ -48,9 +51,11 @@ Host-side unit tests and policy checks for the FujiNet-PC build. ctest runs them
 | `TCPProtocolTests.cpp` | `lib/network-protocol/TCP.cpp` reads, writes, ACCEPT and CLOSE CLIENT over a fake socket (`tcp_protocol_tests`) |
 | `UDPProtocolTests.cpp` | `lib/network-protocol/UDP.cpp` `available()` over a fake socket, including after a status poll moves a datagram to the receive buffer (`udp_protocol_tests`) |
 | `ProtocolFSTests.cpp` | `lib/network-protocol/FS.cpp` unmounting when an open fails, keeping its error (`fs_protocol_tests`) |
+| `HTTPProtocolTests.cpp` | `lib/network-protocol/HTTP.cpp`: when a PUT or POST is sent, with what body, and that it is sent once (`http_protocol_tests`) |
 | `SMBProtocolTests.cpp` | `lib/network-protocol/SMB.cpp` MKDIR and RMDIR failing on a URL with no share and on an unreachable server (`smb_protocol_tests`) |
 | `TelnetProtocolTests.cpp` | `lib/network-protocol/Telnet.cpp` reads (also after the peer closes), writes and separate channels over the same fake socket (`telnet_protocol_tests`) |
-| `tcp_harness/` | Stand-ins for `fnTcpClient.h`, `fnTcpServer.h`, `fnUDP.h`, `fnDNS.h` and `bus.h`, backed by the fake peer in `fnTcpClient.h`; used by `tcp_protocol_tests`, `udp_protocol_tests`, `telnet_protocol_tests`, `fs_protocol_tests` and `smb_protocol_tests` |
+| `tcp_harness/` | Stand-ins for `fnTcpClient.h`, `fnTcpServer.h`, `fnUDP.h`, `fnDNS.h` and `bus.h`, backed by the fake peer in `fnTcpClient.h`; used by `tcp_protocol_tests`, `udp_protocol_tests`, `telnet_protocol_tests`, `fs_protocol_tests`, `smb_protocol_tests` and `http_protocol_tests` |
+| `http_harness/` | Stand-in for `mgHttpClient.h` that records each request in `fake_http`; used by `http_protocol_tests` |
 | `check_no_build_ifdefs.py`, `ifdef_check_config.json` | Policy: a preprocessor conditional under `lib/device/fujiDevice`, `lib/device/fujiClock` or `lib/device/NDevice` may name only an allowed macro; the JSON lists the allowed names globally, per directory or per file (`no_build_ifdefs_in_fujidevice`) |
 | `check_no_system_bus.py` | Policy: `SYSTEM_BUS` must not appear in any source under `lib/media` (`no_system_bus_in_media`) |
 | `unsit.c`, `stuffit_test.sh` | Host CLI over `lib/stuffit` and a comparison against `unar` (`stuffit_sample_tests`; registered only with `SIT_SAMPLES_DIR`) |

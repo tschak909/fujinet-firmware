@@ -5,6 +5,7 @@
 #include "iecClock.h"
 #include "fsFlash.h"
 #include "fnSystem.h"
+#include "../meatloaf/device/flash.h"
 
 #include <sstream>
 
@@ -82,6 +83,9 @@ void iecFuji::setup()
 
     populate_slots_from_config();
 
+    // The drives' "/" is wherever the flash file system lives
+    FlashMFile::basepath = fsFlash.basepath();
+
     FileSystem *ptrfs = fnSDFAT.running() ? (FileSystem *)&fnSDFAT : (FileSystem *)&fsFlash;
 //    iecPrinter::printer_type ptype = Config.get_printer_type(0);
     iecPrinter::printer_type ptype = iecPrinter::printer_type::PRINTER_COMMODORE_MPS803; // temporary
@@ -141,12 +145,6 @@ void logResponse(const void* data, size_t length)
 
 }
 
-
-// IEC can't create disks.
-void iecFuji::fujicmd_new_disk()
-{
-    SYSTEM_BUS.transaction_error();
-}
 
 bool iecFuji::processCommand(const FUJI_COMMAND_PACKET &packet)
 {

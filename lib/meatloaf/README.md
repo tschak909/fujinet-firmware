@@ -2,14 +2,14 @@
 
 The Meatloaf virtual filesystem (James Johnston / idolpx, GPL-3.0): every path or URL becomes an
 `MFile`, and nested containers (an HTTP URL holding a D64 holding a PRG) resolve by chaining
-filesystems. Locally modified. ESP only.
+filesystems. Locally modified.
 
 ## Layout
 | File | Defines |
 |---|---|
 | `meatloaf.h`, `meatloaf.cpp` | `MStream`, `MFile` (derived from `PeoplesUrlParser`), `MFileSystem`, and `MFSOwner`, the registry whose `availableFS` list is searched first match wins |
 | `meat_media.h`, `meat_media.cpp`; `meat_buffer.h` | `MMediaStream`, the base for sector images; stream buffers |
-| `device/` | flash (the default filesystem) and SD |
+| `device/` | flash (the default filesystem), SD, and `fnfile://`, which reads files FujiNet already has open by a name they are attached under |
 | `disk/` | D64, with D71, D80, D81, D82, D90 and DNP as header-only variants |
 | `container/` | D8B and DFI containers |
 | `file/` | P00; `file/prg.h` is a one-line placeholder |
@@ -26,5 +26,6 @@ filesystems. Locally modified. ESP only.
   [lib/TNFSlib/](../TNFSlib/).
 
 ## Build
-ESP: globbed into every target (`meatloaf.cpp` includes the ESP-IDF flash filesystem headers). PC:
-not compiled.
+ESP: globbed into every target. PC: `FUJINET_TARGET=IEC` compiles it without the HTTP, TNFS, `ML:` and
+CommodoreServer filesystems, which need ESP-IDF, lwIP or the ESP VFS. `FlashMFile::basepath` holds the
+flash directory there; `iecFuji::setup()` sets it from `fsFlash`.

@@ -3,8 +3,10 @@
 #include "drive.h"
 #include "fnSystem.h"
 #include "fnFsSD.h"
+#include "IOChannel.h"
 #include "cbm_defines.h"
 #include "meat_media.h"
+#include "../meatloaf/device/fnfile.h"
 
 using namespace std;
 
@@ -148,7 +150,7 @@ iecChannelHandlerFile::iecChannelHandlerFile(iecDrive *drive, MStream *stream, i
 {
   m_stream = stream;
   m_fixLoadAddress = fixLoadAddress;
-  m_timeStart = esp_timer_get_time();
+  m_timeStart = GET_TIMESTAMP();
   m_byteCount = 0;
   m_transportTimeUS = 0;
 }
@@ -156,7 +158,7 @@ iecChannelHandlerFile::iecChannelHandlerFile(iecDrive *drive, MStream *stream, i
 
 iecChannelHandlerFile::~iecChannelHandlerFile()
 {
-  double seconds = (esp_timer_get_time()-m_timeStart) / 1000000.0;
+  double seconds = (GET_TIMESTAMP()-m_timeStart) / 1000000.0;
 
   if( m_stream->mode == std::ios_base::out && m_len>0 )
     writeBufferData();
@@ -190,9 +192,9 @@ uint8_t iecChannelHandlerFile::writeBufferData()
   */
     {
       Debug_printv("bufferSize[%d]", m_len);
-      uint64_t t = esp_timer_get_time();
+      uint64_t t = GET_TIMESTAMP();
       size_t n = m_stream->write(m_data, m_len);
-      m_transportTimeUS += (esp_timer_get_time()-t);
+      m_transportTimeUS += (GET_TIMESTAMP()-t);
       m_byteCount += n;
       if( n<m_len )
         {
@@ -226,9 +228,9 @@ uint8_t iecChannelHandlerFile::readBufferData()
 
       if( m_fixLoadAddress>=0 && m_stream->position()==0 )
         {
-          uint64_t t = esp_timer_get_time();
+          uint64_t t = GET_TIMESTAMP();
           m_len = m_stream->read(m_data, BUFFER_SIZE);
-          m_transportTimeUS += (esp_timer_get_time()-t);
+          m_transportTimeUS += (GET_TIMESTAMP()-t);
           if( m_len>=2 )
             {
               m_data[0] = (m_fixLoadAddress & 0x00FF);
@@ -242,9 +244,9 @@ uint8_t iecChannelHandlerFile::readBufferData()
       // try to fill buffer
       while( m_len<BUFFER_SIZE && !m_stream->eos() )
         {
-          uint64_t t = esp_timer_get_time();
+          uint64_t t = GET_TIMESTAMP();
           m_len += m_stream->read(m_data+m_len, BUFFER_SIZE-m_len);
-          m_transportTimeUS += (esp_timer_get_time()-t);
+          m_transportTimeUS += (GET_TIMESTAMP()-t);
         }
 
       m_byteCount += m_len;
@@ -492,7 +494,7 @@ uint8_t iecChannelHandlerDir::readBufferData()
 
 iecDrive::iecDrive(uint8_t devnum) : IECFileDevice(devnum)
 {
-  m_host = nullptr;
+  m_image = nullptr;
   m_cwd.reset( MFSOwner::File("/") );
   m_statusCode = ST_SPLASH;
   m_statusTrk  = 0;
@@ -530,7 +532,7 @@ bool iecDrive::open(uint8_t channel, const char *cname)
       bool ok = m_vdrive->openFile(channel, cname);
       Debug_printv("File opened on VDrive");
       setStatusCode(ok ? ST_OK : ST_VDRIVE);
-      m_timeStart = esp_timer_get_time();
+      m_timeStart = GET_TIMESTAMP();
       m_byteCount = 0;
       return ok;
     }
@@ -742,7 +744,7 @@ void iecDrive::close(uint8_t channel)
 #ifdef USE_VDRIVE
   if( m_vdrive!=nullptr )
     {
-      double seconds = (esp_timer_get_time()-m_timeStart) / 1000000.0;
+      double seconds = (GET_TIMESTAMP()-m_timeStart) / 1000000.0;
       m_vdrive->closeFile(channel);
       Debug_printv("File closed on VDrive");
       double cps = m_byteCount / seconds;
@@ -1477,16 +1479,16 @@ void iecDrive::set_cwd(std::string path)
    If the disk_type value passed is not MEDIATYPE_UNKNOWN then that's used instead.
    Return value is MEDIATYPE_UNKNOWN in case of failure.
 */
-mediatype_t iecDrive::mount(FILE *f, const char *filename, uint32_t disksize,
+mediatype_t iecDrive::mount(fnFile *f, const char *filename, uint32_t disksize,
                             disk_access_flags_t access_mode, mediatype_t disk_type)
 {
   Debug_printv("filename[%s], disksize[%lu] disktype[%d]", filename, disksize, disk_type);
-  std::string url = this->m_host->get_basepath();
 
-  mstr::toLower(url);
-  if ( url == "sd" )
-    url = "//sd";
-  url += filename;
+  // Read the image through the handle the Fuji device opened. The drive owns it from here on.
+  if ( f != m_image )
+    unmount();
+  m_image = f;
+  std::string url = FnFileMFileSystem::attach(mountName(), f, filename, disksize);
 
   Debug_printv("DRIVE[#%d] URL[%s] MOUNT[%s]", m_devnr, url.c_str(), filename);
 
@@ -1500,12 +1502,27 @@ mediatype_t iecDrive::mount(FILE *f, const char *filename, uint32_t disksize,
 void iecDrive::unmount()
 {
     Debug_printv("DRIVE[#%d] UNMOUNT\r\n", m_devnr);
+    if ( m_image == nullptr )
+        return;
+
+    // Detach first, so that nothing reads the image once it is closed
+    FnFileMFileSystem::detach(mountName());
+    m_cwd.reset( MFSOwner::File("/") );
+    fnio::fclose(m_image);
+    m_image = nullptr;
 
     // if (m_cwd != nullptr)
     // {
     //   //m_cwd->unmount();
     //   device_active = false;
     // }
+}
+
+
+// Create blank disk
+success_is_true iecDrive::write_blank(fnFile *f, const NewDiskRequest &req)
+{
+  return BlankImage::create(f, req.filename, req.sectorSize, req.numSectors);
 }
 
 
