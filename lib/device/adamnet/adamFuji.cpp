@@ -9,8 +9,6 @@
 
 #include "../../include/debug.h"
 
-#include "serial.h"
-
 #include "fnSystem.h"
 #include "fnConfig.h"
 #include "fnWiFi.h"
@@ -29,6 +27,7 @@
 #endif /* _WIN32 */
 
 #define IMAGE_EXTENSION ".ddp"
+#define LOBBY_URL       "tnfs://tnfs.fujinet.online/ADAM/lobby.ddp"
 #define COPY_SIZE 532
 
 adamFuji platformFuji;
@@ -36,7 +35,6 @@ fujiDevice *theFuji = &platformFuji;         // global fuji device object
 adamNetwork *theNetwork;  // global network device object (temporary)
 adamNetwork *theNetwork2; // another network device
 adamPrinter *thePrinter;  // global printer
-adamSerial *theSerial;    // global serial
 
 using namespace std;
 
@@ -44,7 +42,7 @@ using namespace std;
 // sioNetwork sioNetDevs[MAX_NETWORK_DEVICES];
 
 // Constructor
-adamFuji::adamFuji() : fujiDevice(MAX_DISK_DEVICES, IMAGE_EXTENSION, std::nullopt)
+adamFuji::adamFuji() : fujiDevice(MAX_DISK_DEVICES, IMAGE_EXTENSION, LOBBY_URL)
 {
     // Helpful for debugging
     for (int i = 0; i < MAX_HOSTS; i++)
@@ -226,7 +224,6 @@ void adamFuji::setup()
     {
         theNetwork = new adamNetwork();
         theNetwork2 = new adamNetwork();
-        theSerial = new adamSerial();
         SYSTEM_BUS.addDevice(theNetwork, FUJI_DEVICEID::NETWORK);  // temporary.
         SYSTEM_BUS.addDevice(theNetwork2, static_cast<fujiDeviceID_t>(FUJI_DEVICEID::NETWORK + 1)); // temporary
         SYSTEM_BUS.addDevice(theFuji, FUJI_DEVICEID::FUJINET);    // Fuji becomes the gateway device.

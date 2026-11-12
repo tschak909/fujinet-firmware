@@ -10,9 +10,8 @@ protected:
     FNHTML _html;
 
 public:
-    using NParser::NParser;
     HTMLParser(NetworkProtocol *protocol) : NParser(protocol) {
-        _html.setLineEnding("\x0a");
+        _html.setLineEnding(SYSTEM_BUS.nativeEOL());
         _html.setProtocol(_protocol);
     }
 

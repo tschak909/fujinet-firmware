@@ -179,7 +179,7 @@ function show_help {
   echo ""
   echo "companion MCU (RP2040/RP2350) options:"
   echo "   -P       # build ONLY the companion (pico) firmware for the target board, then exit"
-  echo "            # (see the [fujinet] pico_* keys documented in build-sh-readme.md)"
+  echo "            # (see the [fujinet] pico_* keys documented in build-sh.md)"
   echo "            # env var FUJINET_SKIP_PICO=1 skips the companion firmware build entirely"
   echo "            # during a normal -b build and emits a stub instead (used by -a/build-all.sh"
   echo "            # on boards/runners that don't have the companion toolchain installed)"
@@ -198,6 +198,7 @@ function show_help {
   echo "   -p TGT   # perform PC build instead of ESP, for given target (e.g. APPLE|ATARI|ADAM)"
   echo "   -g       # enable debug in generated fujinet-pc exe"
   echo "   -G GEN   # Use GEN as the Generator for cmake (e.g. -G \"Unix Makefiles\" )"
+  echo "            # env var FUJINET_SKIP_TESTS=1 skips ctest, for a cross build that cannot run here"
   echo ""
   echo "other options:"
   echo "   -y       # answers any questions with Y automatically, for unattended builds,"
@@ -497,10 +498,12 @@ if [ ! -z "$PC_TARGET" ] ; then
   fi
 
   # run unit tests
-  ctest -V --progress
+  if [ "${FUJINET_SKIP_TESTS}" != "1" ] ; then
+    ctest -V --progress
     if [ $? -ne 0 ] ; then
-    echo "Error running unit tests. Aborting"
-    exit 1
+      echo "Error running unit tests. Aborting"
+      exit 1
+    fi
   fi
 
   echo "Built PC version in build/dist folder"

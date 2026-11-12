@@ -10,9 +10,8 @@ protected:
     FNXML _xml;
 
 public:
-    using NParser::NParser;
     XMLParser(NetworkProtocol *protocol) : NParser(protocol) {
-        _xml.setLineEnding("\x0a");
+        _xml.setLineEnding(SYSTEM_BUS.nativeEOL());
         _xml.setProtocol(_protocol);
     }
 

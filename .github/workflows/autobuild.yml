@@ -21,7 +21,12 @@ concurrency:
 jobs:
   tagged-release:
     name: "PlatformIO CI"
-    runs-on: "ubuntu-24.04"
+    runs-on: [self-hosted, Linux, X64, fujinet-builder]
+    container:
+      image: ubuntu:24.04
+      options: --add-host=host.docker.internal:host-gateway
+      volumes:
+        - ${{ github.event_name == 'pull_request' && 'fujinet-ci-cache:/ci-cache:ro' || 'fujinet-ci-cache:/ci-cache' }}
     strategy:
       matrix:
         target-platform:
@@ -53,12 +58,22 @@ jobs:
             pico: true
 
     steps:
+    - name: Install base tools
+      shell: bash
+      run: |
+        MIRROR=http://mirrors.edge.kernel.org/ubuntu
+        (echo > /dev/tcp/host.docker.internal/3142) 2>/dev/null \
+          && MIRROR=http://host.docker.internal:3142/mirrors.edge.kernel.org/ubuntu
+        sed -i "s|http://[a-z.]*ubuntu.com/ubuntu|$MIRROR|" /etc/apt/sources.list.d/ubuntu.sources
+        apt-get update && apt-get install -y --no-install-recommends git curl wget ca-certificates build-essential make python3 python3-pip python3-venv gh jq zip unzip
     - name: Checkout Source
       uses: actions/checkout@v4
       with:
         submodules: true
         fetch-depth: 0
 
+    - name: Trust the workspace
+      run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
     - name: Cache pip
       uses: actions/cache@v4
       with:
@@ -67,11 +82,8 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-pip-
 
-    - name: Cache PlatformIO
-      uses: actions/cache@v4
-      with:
-        path: ~/.platformio
-        key: ${{ runner.os }}-${{ hashFiles('**/lockfiles') }}
+    - name: Restore PlatformIO from the host cache
+      run: .github/workflows/pio-cache.sh restore ${{ matrix.target-platform }}
 
     - name: Set up Python
       uses: actions/setup-python@v5
@@ -104,7 +116,7 @@ jobs:
     - name: Install companion-MCU toolchain
       if: matrix.pico
       run: |
-        sudo apt-get update && sudo apt-get install -y \
+        apt-get update && apt-get install -y \
           build-essential cmake ninja-build \
           gcc-arm-none-eabi libnewlib-arm-none-eabi
 
@@ -116,13 +128,17 @@ jobs:
 
     - name: Get Old Version
       id: version
-      run: echo "VERSION=$(grep '#define FN_VERSION_FULL' /home/runner/work/fujinet-firmware/fujinet-firmware/include/version.h | sed 's/^.*"\(.*\)".*$/\1/')" >> $GITHUB_OUTPUT
+      run: echo "VERSION=$(grep '#define FN_VERSION_FULL' "$GITHUB_WORKSPACE"/include/version.h | sed 's/^.*"\(.*\)".*$/\1/')" >> $GITHUB_OUTPUT
 
     - name: Create "version.txt" file
       run: echo "${{ steps.version.outputs.VERSION }}.${{ matrix.target-platform }}" > "$GITHUB_WORKSPACE"/version.txt
 
     - name: Build release
       run: cd "$GITHUB_WORKSPACE" && /usr/bin/bash ./build.sh -y -z -l "$GITHUB_WORKSPACE"/.github/workflows/platformio.release-${{ matrix.target-platform }}.ini -i "$GITHUB_WORKSPACE"/platformio-generated.ini
+
+    - name: Save PlatformIO to the host cache
+      if: success() && github.event_name != 'pull_request'
+      run: .github/workflows/pio-cache.sh save ${{ matrix.target-platform }}
 
     - name: Upload firmware zip for ${{ matrix.target-platform }}
       uses: actions/upload-artifact@v4

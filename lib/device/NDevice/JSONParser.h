@@ -10,9 +10,8 @@ protected:
     FNJSON _json;
 
 public:
-    using NParser::NParser;
     JSONParser(NetworkProtocol *protocol) : NParser(protocol) {
-        _json.setLineEnding("\x0a");
+        _json.setLineEnding(SYSTEM_BUS.nativeEOL());
         _json.setProtocol(_protocol);
     }
 
