@@ -65,6 +65,9 @@ public:
     fujiDeviceID_t id();
 };
 
+// The class FujiDiskDrive derives from on this bus
+using DiskDriveBase = virtualDevice;
+
 /**
  * @brief The Comlynx Bus
  */
@@ -104,8 +107,6 @@ public:
     void setRedeyeMode(bool enable);
     void setRedeyeGameRemap(uint32_t remap);
 
-    bool shuttingDown = false;                                  // TRUE if we are in shutdown process
-    bool getShuttingDown() { return shuttingDown; };
 
     // No BASIC on the Lynx, so cc65's '\n'
     std::string busEOL() override { return "\n"; }

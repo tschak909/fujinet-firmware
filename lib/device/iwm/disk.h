@@ -2,11 +2,9 @@
 #ifndef DISK_H
 #define DISK_H
 
-#include "../disk.h"
-#include "bus.h"
-#include "../media/media.h"
+#include "FujiDiskDrive.h"
 
-class iwmDisk : public virtualDevice
+class iwmDisk : public FujiDiskDrive
 {
 private:
     void prodos_encode_datetime(unsigned short *date_out, unsigned short *time_out);
@@ -20,8 +18,6 @@ private:
 protected:
     iwm_device_info_block_t create_dib_reply_packet() override;
     iwm_device_status_block_t create_status_reply_packet() override;
-
-    MediaType *_disk = nullptr;
 
     void iwm_ctrl(const iwm_decoded_cmd_t &cmd) override;
     void iwm_readblock(const iwm_decoded_cmd_t &cmd) override;
@@ -39,9 +35,9 @@ protected:
 
 public:
     iwmDisk();
-    mediatype_t mount(fnFile *f, const char *filename, uint32_t disksize,
-                      disk_access_flags_t access_mode,
-                      mediatype_t disk_type = MEDIATYPE_UNKNOWN);
+    error_is_true mount(fnFile *f, const char *filename, uint32_t disksize,
+                        disk_access_flags_t access_mode,
+                        mediatype_t disk_type = MEDIATYPE_UNKNOWN);
     virtual mediatype_t mount_file(fnFile *f, uint32_t disksize, mediatype_t disk_type);
     void unmount();
     struct NewDiskRequest {
@@ -55,7 +51,7 @@ public:
 
     void set_disk_number(char c) { disk_num = c; }
     char get_disk_number() { return disk_num; };
-    mediatype_t disktype() { return _disk == nullptr ? MEDIATYPE_UNKNOWN : _disk->_mediatype; };
+    mediatype_t mediatype() { return _media == nullptr ? MEDIATYPE_UNKNOWN : _media->_mediatype; };
     ~iwmDisk();
 };
 

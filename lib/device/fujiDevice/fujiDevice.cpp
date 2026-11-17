@@ -126,7 +126,7 @@ fujiDevice::fujiDevice(unsigned int numDisk, std::string extension,
             fujicmd_random();
         } },
         { CMD::FUJI_SET_BOOT_MODE, [this](const FUJI_COMMAND_PACKET &packet) {
-            fujicmd_set_boot_mode(packet.param(0), MEDIATYPE_UNKNOWN, FUJI_BOOTDISK);
+            fujicmd_set_boot_mode(packet.param(0), FUJI_BOOTDISK);
         } },
         { CMD::FUJI_MOUNT_ALL, [this](const FUJI_COMMAND_PACKET &packet) {
             fujicmd_mount_all_success();
@@ -179,9 +179,9 @@ void fujiDevice::populate_slots_from_config()
 
     for (int i = 0; i < _totalDiskDevices; i++)
     {
-        // A mounted slot is already current; resetting it would drop the fileh
-        // that disk swap counts as mounted.
-        if (_fnDisks[i].fileh != nullptr)
+        // A mounted slot is already current; resetting it would clear the name of
+        // the image its drive is using.
+        if (get_disk_dev(i)->isMounted())
             continue;
 
         _fnDisks[i].reset();
@@ -327,7 +327,7 @@ void fujiDevice::shutdown()
 int fujiDevice::get_rotate_slot()
 {
     int count = 0;
-    while (count < (int)_totalDiskDevices && _fnDisks[count].fileh != nullptr)
+    while (count < (int)_totalDiskDevices && get_disk_dev(count)->isMounted())
         count++;
 
     if (count < 2)
@@ -352,7 +352,7 @@ void fujiDevice::fujicmd_image_rotate()
     std::vector<DISK_DEVICE *> mounted;
     for (size_t idx = 0; idx < _totalDiskDevices; idx++)
     {
-        if (_fnDisks[idx].fileh != nullptr)
+        if (get_disk_dev(idx)->isMounted())
             mounted.push_back(get_disk_dev(idx));
     }
 
@@ -615,37 +615,34 @@ success_is_true fujiDevice::fujicore_mount_disk_image_success(uint8_t deviceSlot
     fujiDisk &disk = *get_disk(deviceSlot);
     fujiHost &host = _fnHosts[disk.host_slot];
 
-    // Not guarded on disk.fileh: WRITE DEVICE SLOTS clears it without closing
     get_disk_dev(deviceSlot)->unmount();
 
     Debug_printf("Selecting '%s' from host #%u as %s on D%u:\r\n",
                  disk.filename, disk.host_slot, mode, deviceSlot + 1);
 
-    disk.fileh = host.fnfile_open(disk.filename, disk.filename, sizeof(disk.filename), mode);
+    // Handed to the drive by mount_media(); the slot keeps no copy
+    fnFile *fileh = host.fnfile_open(disk.filename, disk.filename, sizeof(disk.filename), mode);
 
-    if (disk.fileh == nullptr)
+    if (fileh == nullptr)
         RETURN_ERROR_AS_FALSE();
 
-    // We've gotten this far, so make sure our bootable CONFIG disk is disabled
-    boot_config = false;
-
     // We need the file size for loading XEX files and for CASSETTE, so get that too
-    if (host.file_size(disk.fileh).to(&disk.disk_size).is_error())
+    if (host.file_size(fileh).to(&disk.disk_size).is_error())
     {
         Debug_printf("Refusing '%s': no size, or one too big for 32 bits\r\n", disk.filename);
-        fnio::fclose(disk.fileh);
-        disk.fileh = nullptr;
+        fnio::fclose(fileh);
         RETURN_ERROR_AS_FALSE();
     }
     DISK_DEVICE *disk_dev = get_disk_dev(deviceSlot);
-    disk.disk_type = mount_media(disk_dev, disk, host, access_mode);
+    error_is_true mounted = mount_media(disk_dev, fileh, disk, host, access_mode);
+    disk.disk_type = mounted.is_error() ? MEDIATYPE_UNKNOWN : disk_dev->mediatype();
     disk_dev->is_config_device = false;
 
-    // mount() returns MEDIATYPE_UNKNOWN on failure
-    if (disk.disk_type == MEDIATYPE_UNKNOWN)
-        RETURN_ERROR_AS_FALSE();
+    // A disk is mounted, so make sure our bootable CONFIG disk is disabled
+    if (mounted.is_success())
+        boot_config = false;
 
-    RETURN_SUCCESS_AS_TRUE();
+    RETURN_SUCCESS_IF(mounted.is_success());
 }
 
 success_is_true fujiDevice::fujicmd_mount_disk_image_success(uint8_t deviceSlot,
@@ -665,8 +662,7 @@ success_is_true fujiDevice::fujicmd_mount_disk_image_success(uint8_t deviceSlot,
 }
 
 // Mounts the desired boot disk number
-void fujiDevice::insert_boot_device(uint8_t image_id, mediatype_t disk_type,
-                                    DISK_DEVICE *disk_dev)
+void fujiDevice::insert_boot_device(uint8_t image_id, DISK_DEVICE *disk_dev)
 {
     std::string boot_img;
     fnFile *fBoot = nullptr;
@@ -721,13 +717,13 @@ void fujiDevice::insert_boot_device(uint8_t image_id, mediatype_t disk_type,
         fnio::fclose(fBoot);
         return;
     }
-    disk_dev->mount(fBoot, boot_img.c_str(), image_size, DISK_ACCESS_MODE_READ, disk_type);
+    disk_dev->mount(fBoot, boot_img.c_str(), image_size,
+                    DISK_ACCESS_MODE_READ, MEDIATYPE_UNKNOWN);
     disk_dev->is_config_device = true;
 }
 
 // Mounts the alternate config disk in desired boot disk number
-void fujiDevice::insert_boot_device(std::string boot_img, mediatype_t disk_type,
-                                    DISK_DEVICE *disk_dev)
+void fujiDevice::insert_boot_device(std::string boot_img, DISK_DEVICE *disk_dev)
 {
     fnFile *fBoot = nullptr;
     uint32_t image_size = 0;
@@ -746,7 +742,8 @@ void fujiDevice::insert_boot_device(std::string boot_img, mediatype_t disk_type,
         fnio::fclose(fBoot);
         return;
     }
-    disk_dev->mount(fBoot, boot_img.c_str(), image_size, DISK_ACCESS_MODE_READ, disk_type);
+    disk_dev->mount(fBoot, boot_img.c_str(), image_size,
+                    DISK_ACCESS_MODE_READ, MEDIATYPE_UNKNOWN);
     disk_dev->is_config_device = true;
 }
 
@@ -1545,11 +1542,10 @@ void fujiDevice::fujicmd_set_boot_config(bool enable)
 }
 
 // Set boot mode
-void fujiDevice::fujicmd_set_boot_mode(uint8_t bootMode, mediatype_t disk_type,
-                                       DISK_DEVICE *disk_dev)
+void fujiDevice::fujicmd_set_boot_mode(uint8_t bootMode, DISK_DEVICE *disk_dev)
 {
     SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
-    insert_boot_device(bootMode, disk_type, disk_dev);
+    insert_boot_device(bootMode, disk_dev);
     boot_config = true;
     SYSTEM_BUS.transaction_success();
 }
@@ -1677,7 +1673,7 @@ void fujiDevice::fujicmd_read_device_slots()
         }
 
         DISK_DEVICE *disk_dev = get_disk_dev(i);
-        if (disk_dev->device_active && !disk_dev->is_config_device)
+        if (disk_dev->isMounted() && !disk_dev->is_config_device)
             diskSlots[i].mode |= DISK_ACCESS_MODE_MOUNTED;
     }
 

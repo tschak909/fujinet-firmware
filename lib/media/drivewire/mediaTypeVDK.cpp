@@ -8,11 +8,29 @@
 #include <errno.h>
 
 #include "../../include/debug.h"
+#include "../../include/global_types.h"
+
+// Fixed leading portion of a VDK header; bytes 2-3 give the real header
+// size (this struct plus any trailing disk-name string or reserved padding),
+// and the low 3 bits of the flags byte mark a compressed image, which we
+// don't decompress.
+struct __attribute__((packed)) vdkHeader_t
+{
+    uint8_t magic[2];
+    u16le_t header_size;
+    uint8_t version_src;
+    uint8_t version_compat;
+    uint8_t reserved[5];
+    uint8_t flags;
+};
+static_assert(sizeof(vdkHeader_t) == 12, "VDK fixed header must be 12 bytes");
+
+constexpr uint8_t VDK_COMPRESSION_MASK = 0x07;
 
 // Returns byte offset of given sector number
 uint32_t MediaTypeVDK::_block_to_offset(uint32_t blockNum)
 {
-    return (blockNum-1) * MEDIA_BLOCK_SIZE + 12;
+    return (blockNum-1) * MEDIA_BLOCK_SIZE + _header_size;
 }
 
 // Returns TRUE if an error condition occurred
@@ -25,10 +43,10 @@ error_is_true MediaTypeVDK::read(uint32_t blockNum, uint16_t *readcount)
 
     Debug_print("DW VDK READ\n");
 
-    // Return an error if we're trying to read beyond the end of the disk
-    if (blockNum > _media_num_blocks)
+    // Blocks are numbered from 1; 0 would seek to a wrapped offset
+    if (blockNum == 0 || blockNum > _media_num_blocks)
     {
-        Debug_printf("::read block %lu > %lu\n", blockNum, _media_num_blocks);
+        Debug_printf("::read block %lu outside 1-%lu\n", blockNum, _media_num_blocks);
         _media_controller_status = 2;
         RETURN_ERROR_AS_TRUE();
     }
@@ -61,6 +79,13 @@ error_is_true MediaTypeVDK::read(uint32_t blockNum, uint16_t *readcount)
 error_is_true MediaTypeVDK::write(uint32_t blockNum, bool verify)
 {
     // Debug_printf("VDK WRITE\n", blockNum, _media_num_blocks);
+
+    if (blockNum == 0 || blockNum > _media_num_blocks)
+    {
+        Debug_printf("::write block %lu outside 1-%lu\n", blockNum, _media_num_blocks);
+        _media_controller_status = 2;
+        RETURN_ERROR_AS_TRUE();
+    }
 
     uint32_t offset = _block_to_offset(blockNum);
 
@@ -113,11 +138,39 @@ mediatype_t MediaTypeVDK::mount(fnFile *f, uint32_t disksize)
 {
     Debug_print("VDK MOUNT\n");
 
+    // Set before any early return below so a refused mount still closes f
+    // (via ~MediaType()) instead of leaking the handle.
     _media_fileh = f;
+
+    vdkHeader_t header;
+    if (fnio::fseek(f, 0, SEEK_SET) != 0 ||
+        fnio::fread(&header, 1, sizeof(header), f) != sizeof(header))
+    {
+        Debug_printf("VDK mount: failed reading header (%d)\n", errno);
+        return MEDIATYPE_UNKNOWN;
+    }
+    if (header.magic[0] != 'd' || header.magic[1] != 'k')
+    {
+        Debug_println("VDK mount: missing 'dk' magic");
+        return MEDIATYPE_UNKNOWN;
+    }
+    if (header.flags & VDK_COMPRESSION_MASK)
+    {
+        Debug_printf("VDK mount: compressed images not supported (flags %02X)\n", header.flags);
+        return MEDIATYPE_UNKNOWN;
+    }
+
+    _header_size = header.header_size;
+    if (_header_size < sizeof(header) || _header_size > disksize)
+    {
+        Debug_printf("VDK mount: implausible header_size %u for a %lu byte image\n",
+                     _header_size, (unsigned long)disksize);
+        return MEDIATYPE_UNKNOWN;
+    }
+
     _mediatype = MEDIATYPE_VDK;
-    _media_num_blocks = disksize / VDK_BLOCK_SIZE;
-    //_media_num_blocks = disksize / 256;
-    Debug_printf("_media_num_blocks %lu\r\n",_media_num_blocks);
+    _media_num_blocks = (disksize - _header_size) / VDK_BLOCK_SIZE;
+    Debug_printf("_media_num_blocks %lu (header %u bytes)\r\n", _media_num_blocks, _header_size);
     _media_last_block = INVALID_SECTOR_VALUE;
 
     return _mediatype;
@@ -129,13 +182,6 @@ success_is_true MediaTypeVDK::create(FILE *f, uint32_t numBlocks)
     Debug_print("VDK CREATE\n");
 
     RETURN_ERROR_AS_FALSE();
-}
-
-void MediaTypeVDK::get_block_buffer(uint8_t **p_buffer, uint16_t *p_blk_size)
-{
-    Debug_printv("MediaTypeVDK: get_block_buffer.");    
-    *p_buffer = &_media_blockbuff[0];
-    *p_blk_size = VDK_BLOCK_SIZE;
 }
 
 #endif // BUILD_COCO

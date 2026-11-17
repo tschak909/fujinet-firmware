@@ -1,7 +1,7 @@
 #ifndef DRIVE_H
 #define DRIVE_H
 
-#include "../disk.h"
+#include "FujiDiskDrive.h"
 #include "../fuji/fujiHost.h"
 
 #include <string>
@@ -13,8 +13,6 @@
 #include "compat_esp.h"
 #endif
 
-#include "../../bus/iec/IECFileDevice.h"
-#include "../../media/media.h"
 #include "../meatloaf/meatloaf.h"
 #include "../meatloaf/meat_buffer.h"
 #include "../meatloaf/wrappers/iec_buffer.h"
@@ -221,16 +219,18 @@ class driveMemory
   }
 };
 
-class iecDrive : public IECFileDevice
+class iecDrive : public FujiDiskDrive
 {
  public:
   iecDrive(uint8_t devnum = 0xFF);
   ~iecDrive();
 
-  mediatype_t mount(fnFile *f, const char *filename, uint32_t disksize,
-                    disk_access_flags_t access_mode,
-                    mediatype_t disk_type = MEDIATYPE_UNKNOWN);
+  error_is_true mount(fnFile *f, const char *filename, uint32_t disksize,
+                      disk_access_flags_t access_mode,
+                      mediatype_t disk_type = MEDIATYPE_UNKNOWN);
   void unmount();
+  bool isMounted() const { return m_image != nullptr; }
+  mediatype_t mediatype() { return MEDIATYPE_UNKNOWN; }
 
   struct NewDiskRequest {
     u16le_t numSectors;
@@ -260,7 +260,7 @@ class iecDrive : public IECFileDevice
 #endif /* UNUSED */
   bool is_config_device = false;
 
- private:
+ protected:
   // open file "name" on channel
   virtual bool open(uint8_t channel, const char *name);
 
@@ -291,6 +291,7 @@ class iecDrive : public IECFileDevice
   // called on falling edge of RESET line
   virtual void reset();
 
+ private:
   void set_cwd(std::string path);
 
   // name a mounted image's handle has in Meatloaf's fnfile:// file system

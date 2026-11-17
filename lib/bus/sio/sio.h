@@ -139,6 +139,9 @@ public:
     uint8_t status_wait_count = 5;
 };
 
+// The class FujiDiskDrive derives from on this bus
+using DiskDriveBase = virtualDevice;
+
 enum sio_message : uint16_t
 {
     SIOMSG_DISKSWAP,  // Rotate disk
@@ -262,8 +265,6 @@ public:
     bool getUltraHighEnabled() { return useUltraHigh; }
     int getUltraHighBaudRate() { return _sioBaudUltraHigh; }
 
-    bool shuttingDown = false;                                  // TRUE if we are in shutdown process
-    bool getShuttingDown() { return shuttingDown; };
 
     sioCassette *getCassette() { return _cassetteDev; }
     sioPrinter *getPrinter() { return _printerDev; }
@@ -321,6 +322,10 @@ public:
         else
             _port = &_netsio;
     }
+
+    // theFuji under this platform's own type, so platform code needs no cast
+    sioFuji *platformFuji = nullptr;
+    void setFuji(fujiDevice *fuji) override;
 };
 
 extern systemBus SYSTEM_BUS;

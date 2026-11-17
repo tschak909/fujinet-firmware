@@ -40,8 +40,7 @@ public:
     bool processCommand(const FujiDWPacket &packet) override;
     drivewireFuji();
 
-    void insert_boot_device(uint8_t image_id, mediatype_t disk_type,
-                            DISK_DEVICE *disk_dev) override;
+    void insert_boot_device(uint8_t image_id, DISK_DEVICE *disk_dev) override;
 
     // ============ Wrapped Fuji commands ============
     ByteBuffer appkey_read() override;
@@ -53,7 +52,5 @@ public:
     // Called by the bus between transfers.
     void rotate_disks();
 };
-
-extern drivewireFuji platformFuji;
 
 #endif // DRIVEWIREFUJI_H

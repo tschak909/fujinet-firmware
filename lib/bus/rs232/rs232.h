@@ -94,6 +94,9 @@ public:
     uint8_t status_wait_count = 5;
 };
 
+// The class FujiDiskDrive derives from on this bus
+using DiskDriveBase = virtualDevice;
+
 enum rs232_message : uint16_t
 {
     RS232MSG_DISKSWAP,  // Rotate disk
@@ -158,8 +161,6 @@ public:
     rs232CPM *getCPM() { return _cpmDev; }
 
 
-    bool shuttingDown = false;                                  // TRUE if we are in shutdown process
-    bool getShuttingDown() { return shuttingDown; };
 
     std::string busEOL() override { return "\r\n"; }
 

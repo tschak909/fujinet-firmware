@@ -1,9 +1,7 @@
 #ifndef ADAM_DISK_H
 #define ADAM_DISK_H
 
-#include "../disk.h"
-#include "bus.h"
-#include "media.h"
+#include "FujiDiskDrive.h"
 
 #define STATUS_OK        0
 #define STATUS_BAD_BLOCK 1
@@ -11,10 +9,9 @@
 #define STATUS_NO_MEDIA  3
 #define STATUS_NO_DRIVE  4
 
-class adamDisk : public virtualDevice
+class adamDisk : public FujiDiskDrive
 {
 private:
-    MediaType *_media = nullptr;
 #ifdef ESP_PLATFORM
     TaskHandle_t diskTask;
 #endif /* ESP_PLATFORM */
@@ -29,18 +26,18 @@ private:
     // block are stale re-polls to ignore. Cleared on a new block number / reset.
     bool _receive_acked = false;
 
-    void adamnet_control_send(const FujiAdamPacket &packet) override;
-
     void adamnet_control_send_block_num(const FujiAdamPacket &packet);
     void adamnet_control_send_block_data();
 
+protected:
+    void adamnet_control_send(const FujiAdamPacket &packet) override;
     AdamNetStatus deviceStatus() override;
 
 public:
     adamDisk();
-    mediatype_t mount(fnFile *f, const char *filename, uint32_t disksize,
-                      disk_access_flags_t access_mode,
-                      mediatype_t disk_type = MEDIATYPE_UNKNOWN);
+    error_is_true mount(fnFile *f, const char *filename, uint32_t disksize,
+                        disk_access_flags_t access_mode,
+                        mediatype_t disk_type = MEDIATYPE_UNKNOWN);
     void unmount();
     struct NewDiskRequest {
         uint8_t hostSlot;

@@ -16,8 +16,9 @@ lib/bus/<bus>            wire protocol and timing: systemBus, FUJI_COMMAND_PACKE
         |
 lib/device/<bus>         device behavior for that bus (disk, printer, modem, network, clock ...)
 lib/device/fujiDevice    shared bases the per-bus devices derive from: fujiDevice (CONFIG
-lib/device/NDevice       commands plus mixins), NDevice (the N: network device), fujiClock
-lib/device/fujiClock
+lib/device/NDevice       commands plus mixins), NDevice (the N: network device), fujiClock,
+lib/device/fujiClock     FujiDiskDrive (the disk drive contract)
+lib/device/FujiDiskDrive
         |
 lib/fuji                 host slots (fujiHost) and disk slots (fujiDisk, which embeds DISK_DEVICE)
 lib/media/<platform>     disk image formats: one MediaType family per platform, shared IMDImage
@@ -60,8 +61,10 @@ Conventions that follow from this:
   for devices on that bus, and the `FUJI_COMMAND_PACKET` type the shared device bases consume.
   Grep by directory, not by class name.
 - `SYSTEM_BUS` is the single bus instance, defined in `src/main.cpp`.
-- `theFuji` (a `fujiDevice *`) is set by each `lib/device/<bus>/<bus>Fuji.cpp`; `platformClock`
-  and `fnPrinters` are defined the same way per bus.
+- `SYSTEM_BUS.theFuji` (a `fujiDevice *`) is set by `src/main.cpp` through `setFuji()`. On sio,
+  iwm and drivewire it also sets `SYSTEM_BUS.platformFuji`, the same device under that
+  platform's own Fuji type. `platformClock` and `fnPrinters` are defined per bus in
+  `lib/device/<bus>/`.
 - Command IDs are one enum in [include/fujiCommandID.h](../include/fujiCommandID.h); values
   overlap across device families, so the target device gives a byte its meaning. Device IDs are
   in [include/fujiDeviceID.h](../include/fujiDeviceID.h), with a separate map for ADAM.

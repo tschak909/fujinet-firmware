@@ -81,8 +81,8 @@ string fnHttpServiceParser::mac_slots_json()
             cJSON_AddBoolToObject(s, "rw", Config.get_mount_mode(i) != fnConfig::mount_modes::MOUNTMODE_READ);
         }
 
-        DISK_DEVICE *dd = theFuji->get_disk_dev(i);
-        if (dd != nullptr && dd->is_loaded())
+        DISK_DEVICE *dd = SYSTEM_BUS.theFuji->get_disk_dev(i);
+        if (dd != nullptr && dd->isMounted())
         {
             cJSON_AddBoolToObject(s, "loaded", true);
             cJSON_AddBoolToObject(s, "ro", dd->readonly);
@@ -611,13 +611,13 @@ const string fnHttpServiceParser::substitute_tag(const string &tag)
         break;
 #ifdef BUILD_ATARI
     case FN_PLAY_RECORD:
-        if (platformFuji.cassette()->get_buttons())
+        if (SYSTEM_BUS.platformFuji->cassette()->get_buttons())
             resultstream << "0 PLAY";
         else
             resultstream << "1 RECORD";
         break;
     case FN_PULLDOWN:
-        if (platformFuji.cassette()->has_pulldown())
+        if (SYSTEM_BUS.platformFuji->cassette()->has_pulldown())
             resultstream << "1 Pulldown Resistor";
         else
             resultstream << "0 B Button Press";
@@ -731,7 +731,7 @@ const string fnHttpServiceParser::substitute_tag(const string &tag)
 #endif
         /* What Dx: drive (if any rotation has occurred) does each Drive Slot currently map to? */
         drive_slot = tagid - FN_DRIVE1DEVICE;
-        disk_id = (char) theFuji->get_disk_id(drive_slot);
+        disk_id = (char) SYSTEM_BUS.theFuji->get_disk_id(drive_slot);
         if (disk_id > 0 && disk_id != (char) (0x31 + drive_slot)) {
             resultstream << " (D" << disk_id << ":)";
         }
@@ -748,10 +748,10 @@ const string fnHttpServiceParser::substitute_tag(const string &tag)
     case FN_DRIVE9STATUS:
     case FN_DRIVE10STATUS:
 #endif
-        /* Is the disk the config names for this Drive Slot actually open? */
+        /* Is the disk the config names for this Drive Slot actually mounted? */
         drive_slot = tagid - FN_DRIVE1STATUS;
         if (Config.get_mount_host_slot(drive_slot) != HOST_SLOT_INVALID
-            && theFuji->get_disk(drive_slot)->fileh == nullptr) {
+            && !SYSTEM_BUS.theFuji->get_disk_dev(drive_slot)->isMounted()) {
             resultstream << "(not mounted)";
         }
         break;
@@ -767,7 +767,7 @@ const string fnHttpServiceParser::substitute_tag(const string &tag)
            for the TNFS host mounted on each Host Slot? */
         host_slot = tagid - FN_HOST1PREFIX;
         if (Config.get_host_type(host_slot) != fnConfig::host_types::HOSTTYPE_INVALID) {
-            resultstream << theFuji->get_host_prefix(host_slot);
+            resultstream << SYSTEM_BUS.theFuji->get_host_prefix(host_slot);
         } else {
             resultstream << "";
         }

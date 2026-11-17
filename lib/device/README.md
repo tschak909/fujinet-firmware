@@ -8,14 +8,14 @@ in [lib/bus/](../bus/) decides how bytes move, and [lib/media/](../media/) decod
 
 | File | Selects |
 |---|---|
-| `device.h` | the device headers for the active `BUILD_*` and the per-platform device globals (`sioR`, `sioZ`, `streamDev`, ...). It defines objects, so only `src/main.cpp` includes it |
-| `disk.h` | `DISK_DEVICE`, the disk class embedded in every `fujiDisk` slot, and `disk_access_flags_t` |
+| `device.h` | the device headers for the active `BUILD_*`, the per-platform device globals (`sioR`, `sioZ`, `streamDev`, ...), and `PlatformFuji`, the Fuji class `src/main.cpp` makes and hands to `SYSTEM_BUS.setFuji()`. It defines objects, so only `src/main.cpp` includes it |
+| `disk.h` | `DISK_DEVICE`, the disk class embedded in every `fujiDisk` slot |
 | `printer.h` | `PRINTER_CLASS` |
 | `modem.h`, `cassette.h`, `netstream.h`, `siocpm.h` | the matching device header per platform; `siocpm.h` is the CP/M switch for all platforms despite its name |
 
 ## Shared bases
 
-The three directories below are the model the per-bus code is being moved toward; read them before
+The directories below are the model the per-bus code is being moved toward; read them before
 writing device code (see [docs/cpp-style.md](../../docs/cpp-style.md)). A ctest fails any `BUILD_*`
 conditional inside them: platform differences are expressed by overriding a virtual in the per-bus
 subclass, never by branching here.
@@ -25,9 +25,11 @@ subclass, never by branching here.
 | [fujiDevice/](fujiDevice/) | `fujiDevice` | the FujiNet CONFIG device: host and disk slots, WiFi, directories, mounting. Built from `FujiDeviceChain<Base64Mixin, HashMixin, QRMixin, AppKeyMixin>`, each mixin owning one command family, plus a table of `FUJI_*` handlers |
 | [NDevice/](NDevice/) | `NDevice` | the N: network device: `NET_*` commands dispatched through a table, a `NetworkProtocol` chosen from the URL scheme by `NetworkProtocolFactory`, and an `NParser` strategy (`JSONParser`, `XMLParser`, `HTMLParser`) for queries |
 | [fujiClock/](fujiClock/) | `fujiClock` | the APETime-compatible clock: `APETIME_*` commands and the time formatters |
+| [FujiDiskDrive/](FujiDiskDrive/) | `FujiDiskDrive` | the disk drive contract: the drive's `_media` and `isMounted()`, shared by each bus's `DISK_DEVICE` |
 
-Each base inherits `virtualDevice` virtually, so a subclass such as `sioFuji` is one object that is
-both the bus's `virtualDevice` and the shared base. The subclass implements the bus entry point
+`FujiDiskDrive` inherits the bus's `DiskDriveBase`. Each of the others inherits `virtualDevice`
+virtually, so a subclass such as `sioFuji` is one object that is both the bus's `virtualDevice`
+and the shared base. The subclass implements the bus entry point
 (`sio_process`, `iwm_ctrl`, `processCommand`, ...) and normally calls the base's
 `processCommand()` first, then handles anything platform-specific.
 
@@ -37,7 +39,7 @@ Every per-bus directory follows one layout:
 
 | File | Defines |
 |---|---|
-| `<bus>Fuji.h`, `.cpp` | the `fujiDevice` subclass; its `.cpp` defines `platformFuji` and points the global `theFuji` at it, unless `device.h` picks a per-board subclass (rs232) |
+| `<bus>Fuji.h`, `.cpp` | the `fujiDevice` subclass, or a per-board subclass of it (rs232), that `device.h` names as `PlatformFuji` |
 | `disk.h`, `.cpp` | the `DISK_DEVICE` class |
 | `<bus>Network.h`, `.cpp` | the `NDevice` subclass |
 | `<bus>Clock.h`, `.cpp` | the `fujiClock` subclass; defines the global `platformClock` |

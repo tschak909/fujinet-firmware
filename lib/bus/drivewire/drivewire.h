@@ -108,6 +108,9 @@ public:
     virtual void setErrorCode(nDevStatus_t err) { _errorCode = err; }
 };
 
+// The class FujiDiskDrive derives from on this bus
+using DiskDriveBase = drivewireDevice;
+
 enum drivewire_message : uint16_t
 {
     DRIVEWIREMSG_DISKSWAP,  // Rotate disk
@@ -259,8 +262,6 @@ public:
     using SystemBusBase::transaction_send;
     void transaction_send(const void *data, size_t len, bool is_error=false) override;
 
-    bool shuttingDown = false;                                  // TRUE if we are in shutdown process
-    bool getShuttingDown() { return shuttingDown; };
     bool motorActive = false;
     bool isDragon() { return bDragon; }
 
@@ -301,6 +302,10 @@ public:
         _diskSwapRequested = true;
     }
     fujiDeviceID_t fujiIDForDevice(drivewireDisk *device);
+
+    // theFuji under this platform's own type, so platform code needs no cast
+    drivewireFuji *platformFuji = nullptr;
+    void setFuji(fujiDevice *fuji) override;
 };
 
 extern systemBus SYSTEM_BUS;

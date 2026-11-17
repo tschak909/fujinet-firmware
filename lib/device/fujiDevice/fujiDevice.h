@@ -182,10 +182,10 @@ protected:
     dirEntryDetails _additional_direntry_details(fsdir_entry_t *f);
 
     // Platform hook for fujicore_mount_disk_image_success()
-    virtual mediatype_t mount_media(DISK_DEVICE *disk_dev, fujiDisk &disk, fujiHost &host,
-                                    disk_access_flags_t mode)
+    virtual error_is_true mount_media(DISK_DEVICE *disk_dev, fnFile *fileh, fujiDisk &disk,
+                                      fujiHost &host, disk_access_flags_t mode)
     {
-        return disk_dev->mount(disk.fileh, disk.filename, disk.disk_size, mode);
+        return disk_dev->mount(fileh, disk.filename, disk.disk_size, mode);
     }
 
     // Slot holding the disk that currently answers as drive 1, or -1 when
@@ -271,7 +271,7 @@ public:
     void fujicmd_read_host_slots();
     void fujicmd_write_host_slots();
     void fujicmd_set_boot_config(bool enable);
-    void fujicmd_set_boot_mode(uint8_t bootMode, mediatype_t disk_type, DISK_DEVICE *disk_dev);
+    void fujicmd_set_boot_mode(uint8_t bootMode, DISK_DEVICE *disk_dev);
     void fujicmd_set_host_prefix(uint8_t hostSlot, const char *prefix=nullptr);
     success_is_true fujicmd_unmount_host_success(uint8_t hostSlot);
     void fujicmd_read_device_slots();
@@ -308,10 +308,8 @@ public:
     success_is_true fujicore_net_set_ssid_success(const char *ssid, const char *password, bool save);
 
     // Should be protected but being called by drivewire.cpp
-    virtual void insert_boot_device(uint8_t image_id, mediatype_t disk_type, DISK_DEVICE *disk_dev);
-    void insert_boot_device(std::string boot_img, mediatype_t disk_type, DISK_DEVICE *disk_dev);
+    virtual void insert_boot_device(uint8_t image_id, DISK_DEVICE *disk_dev);
+    void insert_boot_device(std::string boot_img, DISK_DEVICE *disk_dev);
 };
-
-extern fujiDevice *theFuji;
 
 #endif // FUJIDEVICE_H

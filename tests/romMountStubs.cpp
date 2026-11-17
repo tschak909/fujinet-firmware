@@ -1,5 +1,6 @@
-// Link-time stand-ins for the ROM mount tests, built once per target against
-// that target's systemBus. FujiBus packets are recorded in `bus`.
+// Link-time stand-ins for the ROM mount and disk tests, built once per target
+// against that target's systemBus. FujiBus packets and transactions are
+// recorded in `bus`.
 
 #include "romMountStubs.h"
 #include "fujiHost.h"
@@ -9,10 +10,23 @@ BusLog bus;
 HostFiles host_files;
 
 void systemBus::transaction_accept(transState_t) {}
-void systemBus::transaction_success() {}
-void systemBus::transaction_error() {}
-size_result_t systemBus::transaction_get_length(void *, size_t) { RETURN_SIZE_ERROR(); }
-void systemBus::transaction_send(const void *, size_t, bool) {}
+void systemBus::transaction_success() { bus.outcome = Outcome::Success; }
+void systemBus::transaction_error() { bus.outcome = Outcome::Error; }
+
+size_result_t systemBus::transaction_get_length(void *data, size_t len)
+{
+    if (bus.incoming.size() < len)
+        RETURN_SIZE_ERROR();
+    memcpy(data, bus.incoming.data(), len);
+    bus.incoming.erase(bus.incoming.begin(), bus.incoming.begin() + len);
+    RETURN_SIZE(len);
+}
+
+void systemBus::transaction_send(const void *data, size_t len, bool is_error)
+{
+    bus.outcome = is_error ? Outcome::DataWithError : Outcome::Data;
+    bus.answer.assign((const uint8_t *)data, (const uint8_t *)data + len);
+}
 
 success_is_true systemBus::writeFujiBusPacket(FujiBusPacket &packet)
 {
@@ -47,7 +61,7 @@ fnFile *fujiHost::fnfile_open(const char *path, char *, int, const char *)
     auto found = host_files.files.find(path);
     if (found == host_files.files.end())
         return nullptr;
-    host_files.opened.push_back(std::make_unique<MemFile>(found->second));
+    host_files.opened.push_back(MemFile::sharing(found->second));
     return host_files.opened.back().get();
 }
 

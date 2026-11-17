@@ -11,9 +11,6 @@
 #define IMAGE_EXTENSION ".po"
 #define LOBBY_URL       "tnfs://tnfs.fujinet.online/APPLE2/_lobby.po"
 
-iwmFuji platformFuji;
-fujiDevice *theFuji = &platformFuji; // Global fuji object.
-
 iwmFuji::iwmFuji() : fujiDevice(MAX_A2DISK_DEVICES, IMAGE_EXTENSION, LOBBY_URL)
 {
         Debug_printf("Announcing the iwmFuji::iwmFuji()!!!\n");
@@ -157,12 +154,12 @@ void iwmFuji::setup()
   if (boot_config)
   {
     Debug_printf("\nConfig General Boot Mode: %u\n", Config.get_general_boot_mode());
-    insert_boot_device(Config.get_general_boot_mode(), MEDIATYPE_PO, get_disk_dev(0));
+    insert_boot_device(Config.get_general_boot_mode(), get_disk_dev(0));
   }
   else if (!Config.get_config_filename().empty())
   {
     Debug_printf("\nInsert Alternate Config Disk: %s\n", Config.get_config_filename().c_str());
-    insert_boot_device(Config.get_config_filename(), MEDIATYPE_PO, get_disk_dev(0));
+    insert_boot_device(Config.get_config_filename(), get_disk_dev(0));
   }
 }
 
@@ -228,17 +225,17 @@ void iwmFuji::handle_ctl_eject(uint8_t spid)
         int ds = 255;
         for (int i = 0; i < _totalDiskDevices; i++)
         {
-                if (theFuji->get_disk_dev(i)->id() == spid)
+                if (SYSTEM_BUS.theFuji->get_disk_dev(i)->id() == spid)
                 {
                         ds = i;
                 }
         }
         if (ds != 255)
         {
-                theFuji->get_disk(ds)->reset();
+                SYSTEM_BUS.theFuji->get_disk(ds)->reset();
                 Config.clear_mount(ds);
                 Config.save();
-                theFuji->populate_slots_from_config();
+                SYSTEM_BUS.theFuji->populate_slots_from_config();
         }
 }
 

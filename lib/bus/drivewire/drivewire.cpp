@@ -102,8 +102,8 @@ void systemBus::op_reset()
     Debug_printv("op_reset()");
 
     // When a reset transaction occurs, set the mounted disk image to the CONFIG disk image.
-    platformFuji.boot_config = true;
-    platformFuji.insert_boot_device(Config.get_general_boot_mode(), MEDIATYPE_UNKNOWN, platformFuji.FUJI_BOOTDISK);
+    platformFuji->boot_config = true;
+    platformFuji->insert_boot_device(Config.get_general_boot_mode(), platformFuji->FUJI_BOOTDISK);
     if (pNamedObjFp != NULL)
     {
         fclose(pNamedObjFp);
@@ -233,9 +233,13 @@ void systemBus::op_readex()
                 }
             }
         }
-        // send zeros on error
+        // Send zeros on error, from our own buffer: the media's holds its cached block
         if (rc != DISK_CTRL_STATUS_CLEAR)
+        {
+            blk_buffer = sector_data;
+            blk_size = MEDIA_BLOCK_SIZE;
             memset(blk_buffer, 0x00, blk_size);
+        }
     }
     // send sector data
     _port->write(blk_buffer, blk_size);
@@ -371,10 +375,10 @@ void systemBus::op_fuji(dwOpcode_t opcode)
 {
     FujiDWPacket packet(opcode);
 
-    if (_transaction_handle_command(packet, platformFuji))
+    if (_transaction_handle_command(packet, *platformFuji))
         return;
 
-    platformFuji.processCommand(packet);
+    platformFuji->processCommand(packet);
 }
 
 void systemBus::op_cpm(dwOpcode_t opcode)
@@ -408,7 +412,7 @@ void systemBus::op_net(dwOpcode_t opcode)
         _netDev[packet.unit()] = new drivewireNetwork();
     }
 
-    if (_transaction_handle_command(packet, platformFuji))
+    if (_transaction_handle_command(packet, *platformFuji))
         return;
 
     // And pass control to it
@@ -729,7 +733,7 @@ void systemBus::service()
 #endif
 
     if (_diskSwapRequested.exchange(false))
-        platformFuji.rotate_disks();
+        platformFuji->rotate_disks();
 
 #ifdef ESP_PLATFORM
     // Handle cassette play if MOTOR pin active.
@@ -1062,6 +1066,12 @@ fujiDeviceID_t systemBus::fujiIDForDevice(drivewireDisk *device)
     }
 
     return (fujiDeviceID_t) 0;
+}
+
+void systemBus::setFuji(fujiDevice *fuji)
+{
+    SystemBusBase::setFuji(fuji);
+    platformFuji = static_cast<drivewireFuji *>(theFuji);
 }
 
 #endif               /* BUILD_COCO */

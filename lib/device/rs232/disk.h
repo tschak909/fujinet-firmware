@@ -1,39 +1,38 @@
 #ifndef DISK_H
 #define DISK_H
 
+#include "FujiDiskDrive.h"
 #include <ctime>
 
-#include "../disk.h"
-#include "bus.h"
-#include "media.h"
 
 class fujiHost;
 
-class rs232Disk : public virtualDevice
+class rs232Disk : public FujiDiskDrive
 {
 private:
-    MediaType *_disk = nullptr;
     time_t _mount_time = 0;
 
     void rs232_read(uint32_t sector);
     void rs232_write(uint32_t sector, bool verify);
     void rs232_format();
     void rs232_status(FujiStatusReq reqType);
-    void rs232_process(const FujiBusPacket &packet) override;
 
     void derive_percom_block(uint16_t numSectors);
     void rs232_read_percom_block();
     void rs232_write_percom_block();
     void dump_percom_block();
 
+protected:
+    void rs232_process(const FujiBusPacket &packet) override;
+
 public:
     rs232Disk();
-    mediatype_t mount(fnFile *f, const char *filename, uint32_t disksize,
-                      disk_access_flags_t access_mode,
-                      mediatype_t disk_type = MEDIATYPE_UNKNOWN,
-                      fujiHost *host = nullptr);
-    mediatype_t mount_disk_media(fnFile *f, const char *filename, uint32_t disksize,
-                                 mediatype_t disk_type);
+    error_is_true mount(fnFile *f, const char *filename, uint32_t disksize,
+                        disk_access_flags_t access_mode,
+                        mediatype_t disk_type = MEDIATYPE_UNKNOWN,
+                        fujiHost *host = nullptr);
+    error_is_true mount_disk_media(fnFile *f, const char *filename, uint32_t disksize,
+                                   mediatype_t disk_type);
     void unmount();
     struct NewDiskRequest {
         u16le_t numSectors;
@@ -44,7 +43,7 @@ public:
     } __attribute__((packed));
     success_is_true write_blank(fnFile *f, const NewDiskRequest &req);
 
-    mediatype_t disktype() { return _disk == nullptr ? MEDIATYPE_UNKNOWN : _disk->_disktype; };
+    mediatype_t mediatype() { return _media == nullptr ? MEDIATYPE_UNKNOWN : _media->_disktype; };
     time_t mount_time() { return _mount_time; }
 
     ~rs232Disk();

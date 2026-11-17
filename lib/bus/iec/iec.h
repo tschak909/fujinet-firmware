@@ -5,6 +5,7 @@
 #include "IECBusHandler.h"
 #include "FujiIECPacket.h"
 #include "virtualDevice.h"
+#include "IECFileDevice.h"
 #include "string_utils.h"
 #include "NetIEC.h"
 #include "BoIPChannel.h"
@@ -25,6 +26,9 @@ enum {
   TRANSACTION_STATUS_OK    = 0x00,
   TRANSACTION_STATUS_ERROR = 0x01,
 };
+
+// The class FujiDiskDrive derives from on this bus
+using DiskDriveBase = IECFileDevice;
 
 class iecDrive;
 class iecFuji;
@@ -52,12 +56,6 @@ public:
      * @brief called from main shutdown to clean up the device.
      */
     void shutdown();
-
-    /**
-     * @brief Are we shutting down?
-     * @return value of shuttingDown
-     */
-    bool getShuttingDown() { return shuttingDown; }
 
     // needed for fujiDevice compatibility
     void changeDeviceId(iecDrive *pDevice, int device_id);
@@ -100,11 +98,6 @@ public:
     fujiDeviceID_t fujiIDForDevice(iecDrive *device);
 
  private:
-    /**
-     * @brief is device shutting down?
-     */
-    bool shuttingDown = false;
-
     ByteBuffer _transaction_response;
 
     // With [BOIP] enabled, an emulator's bus master sends the transactions over NetIEC

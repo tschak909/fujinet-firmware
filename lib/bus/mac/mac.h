@@ -93,6 +93,9 @@ public:
     char id() { return _devnum; }
 };
 
+// The class FujiDiskDrive derives from on this bus
+using DiskDriveBase = virtualDevice;
+
 // Older Mac code used this name; keep it as an alias.
 using macDevice = virtualDevice;
 
@@ -123,9 +126,6 @@ public:
     void setup();
     void service();
     void shutdown();
-
-    bool shuttingDown = false; // TRUE if we are in shutdown process
-    bool getShuttingDown() { return shuttingDown; };
 
     void add_dcd_mount(char c);
     void rem_dcd_mount(char c);
