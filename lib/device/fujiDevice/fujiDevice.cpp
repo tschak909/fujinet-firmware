@@ -635,7 +635,6 @@ success_is_true fujiDevice::fujicore_mount_disk_image_success(uint8_t deviceSlot
     }
     DISK_DEVICE *disk_dev = get_disk_dev(deviceSlot);
     error_is_true mounted = mount_media(disk_dev, fileh, disk, host, access_mode);
-    disk.disk_type = mounted.is_error() ? MEDIATYPE_UNKNOWN : disk_dev->mediatype();
     disk_dev->is_config_device = false;
 
     // A disk is mounted, so make sure our bootable CONFIG disk is disabled
@@ -717,8 +716,7 @@ void fujiDevice::insert_boot_device(uint8_t image_id, DISK_DEVICE *disk_dev)
         fnio::fclose(fBoot);
         return;
     }
-    disk_dev->mount(fBoot, boot_img.c_str(), image_size,
-                    DISK_ACCESS_MODE_READ, MEDIATYPE_UNKNOWN);
+    disk_dev->mount(fBoot, boot_img.c_str(), image_size, DISK_ACCESS_MODE_READ);
     disk_dev->is_config_device = true;
 }
 
@@ -742,8 +740,7 @@ void fujiDevice::insert_boot_device(std::string boot_img, DISK_DEVICE *disk_dev)
         fnio::fclose(fBoot);
         return;
     }
-    disk_dev->mount(fBoot, boot_img.c_str(), image_size,
-                    DISK_ACCESS_MODE_READ, MEDIATYPE_UNKNOWN);
+    disk_dev->mount(fBoot, boot_img.c_str(), image_size, DISK_ACCESS_MODE_READ);
     disk_dev->is_config_device = true;
 }
 
@@ -908,7 +905,7 @@ void fujiDevice::fujicmd_read_directory_block(uint8_t num_pages, uint8_t group_s
                 break;
             }
 
-            if (!group.add_entry(f)) {
+            if (!group.add_entry(f, directoryMediaType(f->filename))) {
                 break;
             }
         }
@@ -1068,7 +1065,7 @@ dirEntryDetails fujiDevice::_additional_direntry_details(fsdir_entry_t *f)
     if (f->isDir)
         details.flags |= DET_FF_DIR;
 
-    details.mediatype = MediaType::discover_mediatype(f->filename);
+    details.mediatype = directoryMediaType(f->filename);
 
     return details;
 }
