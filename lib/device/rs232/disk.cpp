@@ -51,7 +51,7 @@ static error_is_true push_image(ROMMedia &rom)
         RETURN_ERROR_AS_TRUE();
     }
 
-    auto reply = SYSTEM_BUS.sendCommand(FUJI_DEVICEID::DBC, CMD::NET_OPEN,
+    auto reply = SYSTEM_BUS.sendCommand(FUJI_DEVICEID::DBC, CMD::DBC_SEGMENT_OPEN,
                                         (uint16_t)ROM_IMAGE_SEGMENT,
                                         console_cart_open_data(false, expected_size));
     if (!reply || reply->command() != CMD::FUJI_ACK)
@@ -70,7 +70,7 @@ static error_is_true push_image(ROMMedia &rom)
         if (got.is_error() || buffer.empty())
             break; // the size check below reports it
 
-        reply = SYSTEM_BUS.sendCommand(FUJI_DEVICEID::DBC, CMD::NET_WRITE, buffer);
+        reply = SYSTEM_BUS.sendCommand(FUJI_DEVICEID::DBC, CMD::DBC_SEGMENT_WRITE, buffer);
         if (!reply || reply->command() != CMD::FUJI_ACK)
         {
             Debug_printv("ROM push: failed to send image block\n");
@@ -88,9 +88,10 @@ static error_is_true push_image(ROMMedia &rom)
     }
 
     if (result.is_success())
-        reply = SYSTEM_BUS.sendCommand(FUJI_DEVICEID::DBC, CMD::NET_CLOSE);
+        reply = SYSTEM_BUS.sendCommand(FUJI_DEVICEID::DBC, CMD::DBC_SEGMENT_CLOSE);
     else
-        reply = SYSTEM_BUS.sendCommand(FUJI_DEVICEID::DBC, CMD::NET_CLOSE, ByteBuffer{0x01});
+        reply = SYSTEM_BUS.sendCommand(FUJI_DEVICEID::DBC, CMD::DBC_SEGMENT_CLOSE,
+                                       ByteBuffer{0x01});
     if (!reply || reply->command() != CMD::FUJI_ACK)
     {
         Debug_printv("ROM push: image close failed/rejected\n");
@@ -110,7 +111,7 @@ static error_is_true push_mapper(const std::pmr::vector<uint8_t> &mapper)
         RETURN_ERROR_AS_TRUE();
     }
 
-    auto reply = SYSTEM_BUS.sendCommand(FUJI_DEVICEID::DBC, CMD::NET_OPEN,
+    auto reply = SYSTEM_BUS.sendCommand(FUJI_DEVICEID::DBC, CMD::DBC_SEGMENT_OPEN,
                                         console_cart_open_data(true, mapper.size()));
     if (!reply || reply->command() != CMD::FUJI_ACK)
     {
@@ -123,7 +124,7 @@ static error_is_true push_mapper(const std::pmr::vector<uint8_t> &mapper)
     for (size_t offset = 0; offset < mapper.size(); offset += DISK_SECTORBUF_SIZE)
     {
         size_t count = std::min((size_t)DISK_SECTORBUF_SIZE, mapper.size() - offset);
-        reply = SYSTEM_BUS.sendCommand(FUJI_DEVICEID::DBC, CMD::NET_WRITE,
+        reply = SYSTEM_BUS.sendCommand(FUJI_DEVICEID::DBC, CMD::DBC_SEGMENT_WRITE,
                                        ByteBuffer(mapper.begin() + offset,
                                                   mapper.begin() + offset + count));
         if (!reply || reply->command() != CMD::FUJI_ACK)
@@ -135,9 +136,10 @@ static error_is_true push_mapper(const std::pmr::vector<uint8_t> &mapper)
     }
 
     if (result.is_success())
-        reply = SYSTEM_BUS.sendCommand(FUJI_DEVICEID::DBC, CMD::NET_CLOSE);
+        reply = SYSTEM_BUS.sendCommand(FUJI_DEVICEID::DBC, CMD::DBC_SEGMENT_CLOSE);
     else
-        reply = SYSTEM_BUS.sendCommand(FUJI_DEVICEID::DBC, CMD::NET_CLOSE, ByteBuffer{0x01});
+        reply = SYSTEM_BUS.sendCommand(FUJI_DEVICEID::DBC, CMD::DBC_SEGMENT_CLOSE,
+                                       ByteBuffer{0x01});
     if (!reply || reply->command() != CMD::FUJI_ACK)
     {
         Debug_printv("ROM push: mapper info close failed/rejected\n");
@@ -186,9 +188,8 @@ void rs232Disk::rs232_read(uint32_t sector)
 
     uint32_t readcount;
 
-    bool err = _media->read(sector, &readcount);
+    bool err = _media->read(sector, &readcount).is_error();
 
-    // Send result to Atari
     SYSTEM_BUS.transaction_send(_media->_disk_sectorbuff, readcount, err);
 }
 
@@ -205,13 +206,11 @@ void rs232Disk::rs232_write(uint32_t sector, bool verify)
 
         memset(_media->_disk_sectorbuff, 0, DISK_SECTORBUF_SIZE);
 
-        if (SYSTEM_BUS.transaction_get(_media->_disk_sectorbuff, sectorSize))
+        if (SYSTEM_BUS.transaction_get(_media->_disk_sectorbuff, sectorSize).is_success()
+            && _media->write(sector, verify).is_success())
         {
-            if (_media->write(sector, verify) == false)
-            {
-                SYSTEM_BUS.transaction_success();
-                return;
-            }
+            SYSTEM_BUS.transaction_success();
+            return;
         }
     }
 
@@ -285,7 +284,7 @@ void rs232Disk::rs232_format()
     }
 
     uint32_t responsesize;
-    bool err = _media->format(&responsesize);
+    bool err = _media->format(&responsesize).is_error();
 
     // Send to computer
     SYSTEM_BUS.transaction_send(_media->_disk_sectorbuff, responsesize, err);
@@ -315,13 +314,14 @@ void rs232Disk::rs232_write_percom_block()
     SYSTEM_BUS.transaction_accept(TRANS_STATE::WILL_GET);
     Debug_print("disk WRITE PERCOM BLOCK\n");
 
-    if (_media == nullptr)
+    if (_media == nullptr
+        || SYSTEM_BUS.transaction_get((uint8_t *)&_media->_percomBlock,
+                                       sizeof(_media->_percomBlock)).is_error())
     {
         SYSTEM_BUS.transaction_error();
         return;
     }
 
-    SYSTEM_BUS.transaction_get((uint8_t *)&_media->_percomBlock, sizeof(_media->_percomBlock));
 #ifdef VERBOSE_DISK
     _media->dump_percom_block();
 #endif

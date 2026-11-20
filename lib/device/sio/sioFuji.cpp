@@ -199,7 +199,7 @@ void sioFuji::fujidev_copy_file(const FUJI_COMMAND_PACKET &packet)
     char copySpec[MAX_FILENAME_LEN] = {};
 
     SYSTEM_BUS.transaction_accept(TRANS_STATE::WILL_GET);
-    if (!SYSTEM_BUS.transaction_get(copySpec, sizeof(copySpec)))
+    if (SYSTEM_BUS.transaction_get(copySpec, sizeof(copySpec)).is_error())
     {
         SYSTEM_BUS.transaction_error();
         return;
@@ -418,7 +418,7 @@ void sioFuji::sio_enable_netstream(const FujiSIOPacket &packet)
     char host[64];
 
     SYSTEM_BUS.transaction_accept(TRANS_STATE::WILL_GET);
-    if (!SYSTEM_BUS.transaction_get(&host, sizeof(host)))
+    if (SYSTEM_BUS.transaction_get(&host, sizeof(host)).is_error())
     {
         SYSTEM_BUS.transaction_error();
         return;
@@ -547,7 +547,7 @@ void sioFuji::sio_process(const FujiSIOPacket &packet)
 success_is_true sioFuji::fujicore_mount_disk_image_success(uint8_t deviceSlot,
                                                            disk_access_flags_t access_mode)
 {
-    if (!fujiDevice::fujicore_mount_disk_image_success(deviceSlot, access_mode))
+    if (fujiDevice::fujicore_mount_disk_image_success(deviceSlot, access_mode).is_error())
         RETURN_ERROR_AS_FALSE();
     status_wait_count = 0;
     RETURN_SUCCESS_AS_TRUE();
@@ -588,7 +588,7 @@ void sioFuji::appkey_write(const FUJI_COMMAND_PACKET &packet)
     // length in the params. Draining fewer bytes leaves the rest in the stream
     // and desyncs the bus, so always read the full block and keep only keylen.
     ByteBuffer keydata(MAX_APPKEY_LEN);
-    if (!SYSTEM_BUS.transaction_get(keydata.data(), keydata.size()))
+    if (SYSTEM_BUS.transaction_get(keydata.data(), keydata.size()).is_error())
     {
         SYSTEM_BUS.transaction_error();
         return;

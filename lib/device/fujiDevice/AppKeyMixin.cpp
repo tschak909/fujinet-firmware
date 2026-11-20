@@ -29,7 +29,7 @@ void AppKeyMixin::appkey_open(const FUJI_COMMAND_PACKET &packet)
     appkey key;
 
     // The data expected for this command
-    auto len = SYSTEM_BUS.transaction_get_length(&key, sizeof(key));
+    auto len = SYSTEM_BUS.transaction_get(&key, sizeof(key));
     if (len.is_error() || len != sizeof(key))
     {
         SYSTEM_BUS.transaction_error();
@@ -187,7 +187,7 @@ void AppKeyMixin::appkey_write(const FUJI_COMMAND_PACKET &packet)
 {
     SYSTEM_BUS.transaction_accept(TRANS_STATE::NO_GET);
 
-    if (!appkey_write(packet.data().value_or(ByteBuffer{})))
+    if (appkey_write(packet.data().value_or(ByteBuffer{})).is_error())
     {
         SYSTEM_BUS.transaction_error();
         return;

@@ -43,7 +43,7 @@ void sioDisk::sio_read(const FujiSIOPacket &packet)
 
     uint16_t readcount;
 
-    bool err = _media->read(sectorNum, &readcount);
+    bool err = _media->read(sectorNum, &readcount).is_error();
 
     // Send result to Atari
     SYSTEM_BUS.transaction_send(_media->_disk_sectorbuff, readcount, err);
@@ -69,7 +69,7 @@ void sioDisk::sio_write(const FujiSIOPacket &packet)
     {
         uint16_t sectorSize = _media->sector_size(sectorNum);
 
-        if (SYSTEM_BUS.transaction_get(_media->_disk_sectorbuff, sectorSize)
+        if (SYSTEM_BUS.transaction_get(_media->_disk_sectorbuff, sectorSize).is_success()
             && _media->write(sectorNum, verify).is_success())
         {
             SYSTEM_BUS.transaction_success();
@@ -168,7 +168,7 @@ void sioDisk::sio_format()
     }
 
     uint16_t responsesize;
-    bool err = _media->format(&responsesize);
+    bool err = _media->format(&responsesize).is_error();
 
     // Send to computer
     SYSTEM_BUS.transaction_send(_media->_disk_sectorbuff, responsesize, err);
@@ -200,13 +200,14 @@ void sioDisk::sio_write_percom_block()
 
     Debug_print("disk WRITE PERCOM BLOCK\n");
 
-    if (_media == nullptr)
+    if (_media == nullptr
+        || SYSTEM_BUS.transaction_get(&_media->_percomBlock,
+                                      sizeof(_media->_percomBlock)).is_error())
     {
         SYSTEM_BUS.transaction_error();
         return;
     }
 
-    SYSTEM_BUS.transaction_get(&_media->_percomBlock, sizeof(_media->_percomBlock));
 #ifdef VERBOSE_DISK
     _media->dump_percom_block();
 #endif
