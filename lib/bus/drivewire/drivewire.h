@@ -110,6 +110,13 @@ public:
 
 // The class FujiDiskDrive derives from on this bus
 using DiskDriveBase = drivewireDevice;
+class BlockMedia;
+using DiskDriveMedia = BlockMedia;
+
+// A sector as OP_READ, OP_READEX, and OP_WRITE carry it.
+constexpr uint16_t DRIVEWIRE_SECTOR_SIZE = 256;
+// The result byte of a read that worked.
+constexpr uint8_t DRIVEWIRE_RESULT_OK = 0x00;
 
 enum drivewire_message : uint16_t
 {
@@ -185,11 +192,6 @@ private:
      * @brief Drive number (0-255)
      */
     uint8_t drive_num;
-
-    /**
-     * @brief Sector data (256 bytes)
-     */
-    uint8_t sector_data[MEDIA_BLOCK_SIZE];
 
     /**
      * @brief NOP command (do nothing)

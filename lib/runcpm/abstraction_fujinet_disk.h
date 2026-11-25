@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <algorithm>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "globals.h"
@@ -245,12 +246,12 @@ static uint8_t _cpm_file_read(const char *name, long fpos)
     // set DMA buffer to EOF
     uint8_t dmabuf[BlkSZ];
     memset(dmabuf, 0x1a, BlkSZ);
-    size_t records = fread(dmabuf, BlkSZ, 1, entry->file);
-    if (records)
+    size_t bytes = fread(dmabuf, 1, BlkSZ, entry->file);
+    if (bytes > 0)
         memcpy((uint8_t *)&RAM[dmaAddr], dmabuf, BlkSZ);
     else if (ferror(entry->file))
         _cpm_file_close(*entry);
-    return records ? 0x00 : 0x01;
+    return bytes > 0 ? 0x00 : 0x01;
 }
 
 static uint8_t _cpm_file_write(const char *name, long fpos, uint8_t seekError)
@@ -392,6 +393,17 @@ RUNCPM_DECL uint16_t fileExtents = 0;
 RUNCPM_DECL uint16_t fileExtentsUsed = 0;
 RUNCPM_DECL uint16_t firstFreeAllocBlock;
 
+// A host name CP/M can address: 1-8 characters, optionally a dot and 0-3 more
+RUNCPM_DECL bool _is_cpm_name(const char *name)
+{
+    const char *dot = strchr(name, '.');
+    size_t base_len = dot ? static_cast<size_t>(dot - name) : strlen(name);
+
+    if (base_len < 1 || base_len > 8)
+        return false;
+    return !dot || (strchr(dot + 1, '.') == nullptr && strlen(dot + 1) <= 3);
+}
+
 RUNCPM_DECL uint8_t _findnext(uint8_t isdir)
 {
     uint8_t result = 0xff;
@@ -405,9 +417,11 @@ RUNCPM_DECL uint8_t _findnext(uint8_t isdir)
 
     while ((entry = fnSDFAT.dir_read()))
     {
-        strcpy((char *)findNextDirName, entry->filename); // careful watch for string overflow!
-        if (entry->isDir)
+        if (entry->isDir || !_is_cpm_name(entry->filename))
             continue;
+        size_t name_len = std::string_view(entry->filename).copy(
+            reinterpret_cast<char *>(findNextDirName), sizeof(findNextDirName) - 1);
+        findNextDirName[name_len] = 0;
         uint32_t bytes = entry->size;
         _HostnameToFCBname(findNextDirName, fcbname);
         if (match(fcbname, pattern))

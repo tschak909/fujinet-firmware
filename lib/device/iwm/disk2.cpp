@@ -43,19 +43,16 @@ mediatype_t iwmDisk2::mount_file(fnFile *f, uint32_t disksize, mediatype_t disk_
   mediatype_t mt = MEDIATYPE_UNKNOWN;
 
   // Destroy any existing MediaType
-  if (_media != nullptr)
-  {
-    delete _media;
-    _media = nullptr;
-  }
+  retire_media();
+  _media.reset();
 
   switch (disk_type)
     {
     case MEDIATYPE_WOZ:
         Debug_printf("\nMounting Media Type WOZ");
         device_active = true;
-        _media = new MediaTypeWOZ();
-        mt = ((MediaTypeWOZ *)_media)->mount(f, disksize);
+        _media = std::make_unique<MediaTypeWOZ>();
+        mt = _media->mount(f, disksize);
         break;
     case MEDIATYPE_2MG:
         disk_type = MEDIATYPE_PO; // Disk II serves a 2MG as PO, as it always has
@@ -64,17 +61,19 @@ mediatype_t iwmDisk2::mount_file(fnFile *f, uint32_t disksize, mediatype_t disk_
     case MEDIATYPE_PO:
         Debug_printf("\nMounting Media Type DSK");
         device_active = true;
-        _media = new MediaTypeDSK();
+        _media = std::make_unique<MediaTypeDSK>();
         _media->_mediatype = disk_type;
-        mt = ((MediaTypeDSK *)_media)->mount(f, disksize);
+        mt = _media->mount(f, disksize);
         break;
     default:
         Debug_printf("\r\nUnsupported Media Type for DiskII");
         mt = MEDIATYPE_UNKNOWN;
+        fnio::fclose(f);
         break;
     }
 
     if (mt == MEDIATYPE_WOZ) {
+        _media_ready = true;
         change_track(0); // initialize spi buffer
     } else {
         Debug_printf("\nMedia Type UNKNOWN - no mount in disk2.cpp");
@@ -118,7 +117,31 @@ success_is_true IRAM_ATTR iwmDisk2::move_head()
   RETURN_SUCCESS_IF(delta != 0);
 }
 
+void iwmDisk2::unmount()
+{
+  retire_media();
+  iwmDisk::unmount();
+}
+
+// Stops new change_track() uses of the media, then waits out the ones in flight (the head-step ISR
+// runs on the other core)
+void iwmDisk2::retire_media()
+{
+  _media_ready = false;
+  while (_media_users != 0)
+  {
+  }
+}
+
 void IRAM_ATTR iwmDisk2::change_track(int indicator)
+{
+  ++_media_users;
+  if (_media_ready)
+    copy_track_from_media(indicator);
+  --_media_users;
+}
+
+void IRAM_ATTR iwmDisk2::copy_track_from_media(int indicator)
 {
   if (!device_active)
     return;
@@ -133,27 +156,27 @@ void IRAM_ATTR iwmDisk2::change_track(int indicator)
   // should only copy track data over if it's changed
   assert(old_pos >= 0 && old_pos < MAX_TRACKS);
   assert(track_pos >= 0 && track_pos < MAX_TRACKS);
-  if ((((MediaTypeWOZ *)_media)->trackmap(old_pos) == ((MediaTypeWOZ *)_media)->trackmap(track_pos)) && indicator)
+  if ((static_cast<MediaTypeWOZ *>(_media.get())->trackmap(old_pos) == static_cast<MediaTypeWOZ *>(_media.get())->trackmap(track_pos)) && indicator)
     return;
 
 #ifndef DEV_RELAY_SLIP
   // need to tell diskii_xface the number of bits in the track
   // and where the track data is located so it can convert it
-  if (((MediaTypeWOZ *)_media)->trackmap(track_pos) != 255)
+  if (static_cast<MediaTypeWOZ *>(_media.get())->trackmap(track_pos) != 255)
   {
-    TRK_bitstream *bitstream = ((MediaTypeWOZ *)_media)->get_track(track_pos);
+    TRK_bitstream *bitstream = static_cast<MediaTypeWOZ *>(_media.get())->get_track(track_pos);
     diskii_xface.copy_track(
         bitstream->data,
         bitstream->len_bytes,
         bitstream->len_bits,
-        NS_PER_BIT_TIME * ((MediaTypeWOZ *)_media)->optimal_bit_timing);
+        NS_PER_BIT_TIME * static_cast<MediaTypeWOZ *>(_media.get())->optimal_bit_timing);
   }
   else
     diskii_xface.copy_track(
         nullptr,
         BLANK_TRACK_LEN,
         BLANK_TRACK_LEN * 8,
-        NS_PER_BIT_TIME * ((MediaTypeWOZ *)_media)->optimal_bit_timing);
+        NS_PER_BIT_TIME * static_cast<MediaTypeWOZ *>(_media.get())->optimal_bit_timing);
 #endif // !SLIP
   // Since the empty track has no data, and therefore no length, using a fake length of 51,200 bits (6400 bytes) works very well.
 }

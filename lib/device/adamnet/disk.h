@@ -25,6 +25,7 @@ private:
     // Set once we've ACKed this block's RECEIVE; further RECEIVEs for the same
     // block are stale re-polls to ignore. Cleared on a new block number / reset.
     bool _receive_acked = false;
+    bool _read_only = false;
 
     void adamnet_control_send_block_num(const FujiAdamPacket &packet);
     void adamnet_control_send_block_data();
@@ -47,8 +48,6 @@ public:
     } __attribute__((packed));
     error_is_true write_blank(fnFile *f, const NewDiskRequest &req);
     void reset() override;
-    MediaType *get_media() { return  _media; }
-    void set_media(MediaType *__media) { _media = __media; }
 
     mediatype_t mediatype() { return _media == nullptr ? MEDIATYPE_UNKNOWN : _media->_mediatype; };
 

@@ -241,97 +241,92 @@ target_include_directories(imdimage_tests PRIVATE
 add_test(NAME imdimage_tests COMMAND imdimage_tests)
 
 # ------------------------------------------------------------------------------
-# The RS232 MediaTypeIMD adapter. BUILD_RS232 selects the rs232 media layer;
-# the adapter deliberately includes nothing from lib/device or lib/bus, so the
-# media sources alone link.
-# UNIT_TESTS is required - fujinet_pc.cmake puts -DDBUG2 on CMAKE_CXX_FLAGS,
-# which turns on DEBUG, which makes debug.h pull in <utils.h> that we do not
-# link here. debug.h undefines DEBUG when UNIT_TESTS is set.
-# FNIO_IS_STDIO pins fnFile to std::FILE, which would otherwise be FileHandler
-# and drag the whole FileSystem stack in. The ESP builds cover FileHandler.
+# The disk formats, each opened from a real file. UNIT_TESTS is required -
+# fujinet_pc.cmake puts -DDBUG2 on CMAKE_CXX_FLAGS, which turns on DEBUG, which
+# makes debug.h pull in <utils.h> that we do not link here. FNIO_IS_STDIO pins
+# fnFile to std::FILE instead of the whole FileSystem stack. Undefining the
+# platform keeps media.h from pulling in its legacy disk headers.
 # ------------------------------------------------------------------------------
-add_executable(mediatypeimd_tests
-    MediaTypeIMDTests.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/IMDImage.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/rs232/diskType.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/rs232/diskTypeAltair.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/rs232/diskTypeIMD.cpp
+add_executable(rawdisk_tests
+    RawDiskTests.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/DiskMedia.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/BlockMedia.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/RawDisk.cpp
 )
 
-target_compile_definitions(mediatypeimd_tests PRIVATE BUILD_RS232 UNIT_TESTS FNIO_IS_STDIO)
+target_compile_definitions(rawdisk_tests PRIVATE UNIT_TESTS FNIO_IS_STDIO)
+target_compile_options(rawdisk_tests PRIVATE -U${FUJINET_BUILD_PLATFORM})
 
-target_include_directories(mediatypeimd_tests PRIVATE
-    ${CMAKE_SOURCE_DIR}/include/      # debug.h, global_types.h
-    ${CMAKE_SOURCE_DIR}/lib/
-    ${CMAKE_SOURCE_DIR}/lib/FileSystem/
+target_include_directories(rawdisk_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/include/
     ${CMAKE_SOURCE_DIR}/lib/media/
-    ${CMAKE_SOURCE_DIR}/lib/media/rs232/
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/
+    ${CMAKE_SOURCE_DIR}/lib/FileSystem/
+    ${CMAKE_SOURCE_DIR}/components_pc/   # doctest
+)
+
+add_test(NAME rawdisk_tests COMMAND rawdisk_tests)
+
+# The ImageDisk format through IMDImage.
+add_executable(imddisk_tests
+    IMDDiskTests.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/media.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/IMDImage.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/DiskMedia.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/BlockMedia.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/IMDDisk.cpp
+)
+
+target_compile_definitions(imddisk_tests PRIVATE UNIT_TESTS FNIO_IS_STDIO)
+target_compile_options(imddisk_tests PRIVATE -U${FUJINET_BUILD_PLATFORM})
+
+target_include_directories(imddisk_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/include/
+    ${CMAKE_SOURCE_DIR}/lib/
+    ${CMAKE_SOURCE_DIR}/lib/compat/
+    ${CMAKE_SOURCE_DIR}/lib/fuji/
+    ${CMAKE_SOURCE_DIR}/lib/media/
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/
+    ${CMAKE_SOURCE_DIR}/lib/FileSystem/
     ${CMAKE_SOURCE_DIR}/lib/utils/
-    ${CMAKE_SOURCE_DIR}/components_pc/
+    ${CMAKE_SOURCE_DIR}/components_pc/   # doctest
 )
 
 if(WIN32)
-    target_link_libraries(mediatypeimd_tests PRIVATE ws2_32)
+    target_link_libraries(imddisk_tests PRIVATE ws2_32)
 endif()
 
-add_test(NAME mediatypeimd_tests COMMAND mediatypeimd_tests)
+add_test(NAME imddisk_tests COMMAND imddisk_tests)
 
-# ------------------------------------------------------------------------------
-# The RS232 MediaTypeAltair adapter, built like mediatypeimd_tests above.
-# ------------------------------------------------------------------------------
-add_executable(mediatypealtair_tests
-    MediaTypeAltairTests.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/IMDImage.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/rs232/diskType.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/rs232/diskTypeAltair.cpp
+# The Altair FDC+ format.
+add_executable(altairdsk_tests
+    AltairDSKTests.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/media.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/DiskMedia.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/BlockMedia.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/AltairDSK.cpp
 )
 
-target_compile_definitions(mediatypealtair_tests PRIVATE BUILD_RS232 UNIT_TESTS FNIO_IS_STDIO)
+target_compile_definitions(altairdsk_tests PRIVATE UNIT_TESTS FNIO_IS_STDIO)
+target_compile_options(altairdsk_tests PRIVATE -U${FUJINET_BUILD_PLATFORM})
 
-target_include_directories(mediatypealtair_tests PRIVATE
-    ${CMAKE_SOURCE_DIR}/include/      # debug.h, global_types.h
+target_include_directories(altairdsk_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/include/
     ${CMAKE_SOURCE_DIR}/lib/
-    ${CMAKE_SOURCE_DIR}/lib/FileSystem/
+    ${CMAKE_SOURCE_DIR}/lib/compat/
+    ${CMAKE_SOURCE_DIR}/lib/fuji/
     ${CMAKE_SOURCE_DIR}/lib/media/
-    ${CMAKE_SOURCE_DIR}/lib/media/rs232/
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/
+    ${CMAKE_SOURCE_DIR}/lib/FileSystem/
     ${CMAKE_SOURCE_DIR}/lib/utils/
-    ${CMAKE_SOURCE_DIR}/components_pc/
+    ${CMAKE_SOURCE_DIR}/components_pc/   # doctest
 )
 
 if(WIN32)
-    target_link_libraries(mediatypealtair_tests PRIVATE ws2_32)
+    target_link_libraries(altairdsk_tests PRIVATE ws2_32)
 endif()
 
-add_test(NAME mediatypealtair_tests COMMAND mediatypealtair_tests)
-
-# ------------------------------------------------------------------------------
-# The RS232 MediaTypeImg blank image, built like mediatypealtair_tests above.
-# ------------------------------------------------------------------------------
-add_executable(mediatypeimg_tests
-    MediaTypeImgTests.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/IMDImage.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/rs232/diskType.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/rs232/diskTypeAltair.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/rs232/diskTypeImg.cpp
-)
-
-target_compile_definitions(mediatypeimg_tests PRIVATE BUILD_RS232 UNIT_TESTS FNIO_IS_STDIO)
-
-target_include_directories(mediatypeimg_tests PRIVATE
-    ${CMAKE_SOURCE_DIR}/include/      # debug.h, global_types.h
-    ${CMAKE_SOURCE_DIR}/lib/
-    ${CMAKE_SOURCE_DIR}/lib/FileSystem/
-    ${CMAKE_SOURCE_DIR}/lib/media/
-    ${CMAKE_SOURCE_DIR}/lib/media/rs232/
-    ${CMAKE_SOURCE_DIR}/lib/utils/
-    ${CMAKE_SOURCE_DIR}/components_pc/
-)
-
-if(WIN32)
-    target_link_libraries(mediatypeimg_tests PRIVATE ws2_32)
-endif()
-
-add_test(NAME mediatypeimg_tests COMMAND mediatypeimg_tests)
+add_test(NAME altairdsk_tests COMMAND altairdsk_tests)
 
 # ------------------------------------------------------------------------------
 # The Commodore blank images NEW DISK writes. BUILD_IEC is the whole-file guard on
@@ -366,7 +361,7 @@ target_include_directories(file_size_tests PRIVATE
 add_test(NAME file_size_tests COMMAND file_size_tests)
 
 # ------------------------------------------------------------------------------
-# The ADAM DDP, DSK and ROM media bounds, built like mediatypeimg_tests above.
+# The ADAM DDP and DSK media bounds, built like rawdisk_tests above.
 # FLASH_SPIFFS and fnFsSPIFFS.cpp provide the fsFlash the high-score writes name.
 # Not on Windows: the FNIO_IS_STDIO paths use FILE::_flags and fsync().
 # ------------------------------------------------------------------------------
@@ -376,7 +371,6 @@ if(NOT WIN32)
       ${CMAKE_SOURCE_DIR}/lib/media/adam/mediaType.cpp
       ${CMAKE_SOURCE_DIR}/lib/media/adam/mediaTypeDDP.cpp
       ${CMAKE_SOURCE_DIR}/lib/media/adam/mediaTypeDSK.cpp
-      ${CMAKE_SOURCE_DIR}/lib/media/adam/mediaTypeROM.cpp
       ${CMAKE_SOURCE_DIR}/lib/FileSystem/fnFS.cpp
       ${CMAKE_SOURCE_DIR}/lib/FileSystem/fnDirCache.cpp
       ${CMAKE_SOURCE_DIR}/lib/FileSystem/fnFsSPIFFS.cpp
@@ -408,7 +402,7 @@ if(NOT WIN32)
 endif()
 
 # ------------------------------------------------------------------------------
-# The Apple MediaType2MG and MediaTypePO mounts, built like mediatypeimg_tests above.
+# The Apple MediaType2MG and MediaTypePO mounts, built like rawdisk_tests above.
 # ------------------------------------------------------------------------------
 add_executable(mediatype2mg_tests
     MediaType2MGTests.cpp
@@ -438,7 +432,7 @@ add_test(NAME mediatype2mg_tests COMMAND mediatype2mg_tests)
 
 # ------------------------------------------------------------------------------
 # FileSystemSDFAT listings over a local directory, as on FujiNet-PC. See
-# mediatypeimd_tests above for UNIT_TESTS/FNIO_IS_STDIO.
+# imddisk_tests above for UNIT_TESTS/FNIO_IS_STDIO.
 # ------------------------------------------------------------------------------
 add_executable(fssd_listing_tests
     FsSDListingTests.cpp
@@ -848,7 +842,6 @@ if(FUJINET_TARGET STREQUAL "ADAM")
     ${CMAKE_SOURCE_DIR}/lib/media/adam/mediaType.cpp
     ${CMAKE_SOURCE_DIR}/lib/media/adam/mediaTypeDDP.cpp
     ${CMAKE_SOURCE_DIR}/lib/media/adam/mediaTypeDSK.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/adam/mediaTypeROM.cpp
     ${CMAKE_SOURCE_DIR}/lib/bus/DaisyChain.cpp
     ${CMAKE_SOURCE_DIR}/lib/FileSystem/fnFS.cpp
     ${CMAKE_SOURCE_DIR}/lib/FileSystem/fnDirCache.cpp
@@ -915,7 +908,7 @@ endif()
 # cartridge's RP2040 at FUJI_DEVICEID::DBC and what mount() returns.
 # romMountStubs.cpp, built against each target's systemBus, records the
 # FujiBus packets and scripts the replies, and serves fujiHost files from
-# memory. UNIT_TESTS as for mediatypeimd_tests above; fnFile stays the
+# memory. UNIT_TESTS as for imddisk_tests above; fnFile stays the
 # FileHandler both builds use, so the tests can count closes on their handles.
 # PINMAP_FUJIVERSAL_DRIVEWIRE turns on the drivewire ROM push, which the
 # fujinet-pc build otherwise compiles out.
@@ -968,17 +961,18 @@ if(FUJINET_TARGET STREQUAL "COCO")
     channelStubs.cpp
     ${CMAKE_SOURCE_DIR}/lib/device/drivewire/disk.cpp
     ${CMAKE_SOURCE_DIR}/lib/FileSystem/fnFile.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/drivewire/mediaType.cpp
     ${CMAKE_SOURCE_DIR}/lib/media/media.cpp
     ${CMAKE_SOURCE_DIR}/lib/media/rom/ROMMedia.cpp
     ${CMAKE_SOURCE_DIR}/lib/media/rom/CoCoCartROM.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/drivewire/mediaTypeDSK.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/drivewire/mediaTypeMRM.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/drivewire/mediaTypeVDK.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/drivewire/mediaTypeCASDSK.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/drivewire/casIndex.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/drivewire/casReader.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/drivewire/decbLayout.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/DiskMedia.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/BlockMedia.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/CoCoDSK.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/DragonVDK.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/PMD85MRM.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/CoCoCAS.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/casIndex.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/casReader.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/decbLayout.cpp
     ${CMAKE_SOURCE_DIR}/lib/bus/FujiBusPacket.cpp
     ${CMAKE_SOURCE_DIR}/lib/bus/DaisyChain.cpp
   )
@@ -987,7 +981,6 @@ if(FUJINET_TARGET STREQUAL "COCO")
   target_include_directories(drivewire_rom_mount_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/lib/device/drivewire/
     ${CMAKE_SOURCE_DIR}/lib/bus/drivewire/
-    ${CMAKE_SOURCE_DIR}/lib/media/drivewire/
     ${ROM_MOUNT_TEST_INCLUDES}
   )
   if(WIN32)
@@ -1004,17 +997,18 @@ if(FUJINET_TARGET STREQUAL "COCO")
     channelStubs.cpp
     ${CMAKE_SOURCE_DIR}/lib/device/drivewire/disk.cpp
     ${CMAKE_SOURCE_DIR}/lib/FileSystem/fnFile.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/drivewire/mediaType.cpp
     ${CMAKE_SOURCE_DIR}/lib/media/media.cpp
     ${CMAKE_SOURCE_DIR}/lib/media/rom/ROMMedia.cpp
     ${CMAKE_SOURCE_DIR}/lib/media/rom/CoCoCartROM.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/drivewire/mediaTypeDSK.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/drivewire/mediaTypeMRM.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/drivewire/mediaTypeVDK.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/drivewire/mediaTypeCASDSK.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/drivewire/casIndex.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/drivewire/casReader.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/drivewire/decbLayout.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/DiskMedia.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/BlockMedia.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/CoCoDSK.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/DragonVDK.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/PMD85MRM.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/CoCoCAS.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/casIndex.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/casReader.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/decbLayout.cpp
     ${CMAKE_SOURCE_DIR}/lib/bus/FujiBusPacket.cpp
     ${CMAKE_SOURCE_DIR}/lib/bus/DaisyChain.cpp
   )
@@ -1022,7 +1016,6 @@ if(FUJINET_TARGET STREQUAL "COCO")
   target_include_directories(drivewire_disk_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/lib/device/drivewire/
     ${CMAKE_SOURCE_DIR}/lib/bus/drivewire/
-    ${CMAKE_SOURCE_DIR}/lib/media/drivewire/
     ${ROM_MOUNT_TEST_INCLUDES}
   )
   if(WIN32)
@@ -1044,7 +1037,6 @@ if(FUJINET_TARGET STREQUAL "COCO")
   target_compile_definitions(media_tests PRIVATE UNIT_TESTS PINMAP_FUJIVERSAL_DRIVEWIRE)
   target_include_directories(media_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/lib/bus/drivewire/
-    ${CMAKE_SOURCE_DIR}/lib/media/drivewire/
     ${ROM_MOUNT_TEST_INCLUDES}
   )
   if(WIN32)
@@ -1061,10 +1053,11 @@ if(FUJINET_TARGET STREQUAL "RS232")
     ${CMAKE_SOURCE_DIR}/lib/device/rs232/disk.cpp
     ${CMAKE_SOURCE_DIR}/lib/FileSystem/fnFile.cpp
     ${CMAKE_SOURCE_DIR}/lib/media/IMDImage.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/rs232/diskType.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/rs232/diskTypeAltair.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/rs232/diskTypeIMD.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/rs232/diskTypeImg.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/DiskMedia.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/BlockMedia.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/RawDisk.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/IMDDisk.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/AltairDSK.cpp
     ${CMAKE_SOURCE_DIR}/lib/media/media.cpp
     ${CMAKE_SOURCE_DIR}/lib/media/rom/ROMMedia.cpp
     ${CMAKE_SOURCE_DIR}/lib/media/rom/Atari2600ROM.cpp
@@ -1107,10 +1100,11 @@ if(FUJINET_TARGET STREQUAL "RS232")
     ${CMAKE_SOURCE_DIR}/lib/device/rs232/disk.cpp
     ${CMAKE_SOURCE_DIR}/lib/FileSystem/fnFile.cpp
     ${CMAKE_SOURCE_DIR}/lib/media/IMDImage.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/rs232/diskType.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/rs232/diskTypeAltair.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/rs232/diskTypeIMD.cpp
-    ${CMAKE_SOURCE_DIR}/lib/media/rs232/diskTypeImg.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/DiskMedia.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/BlockMedia.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/RawDisk.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/IMDDisk.cpp
+    ${CMAKE_SOURCE_DIR}/lib/media/disk/AltairDSK.cpp
     ${CMAKE_SOURCE_DIR}/lib/media/media.cpp
     ${CMAKE_SOURCE_DIR}/lib/media/rom/ROMMedia.cpp
     ${CMAKE_SOURCE_DIR}/lib/media/rom/Atari2600ROM.cpp

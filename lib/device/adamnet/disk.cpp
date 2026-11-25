@@ -17,11 +17,7 @@ adamDisk::adamDisk()
 // Destructor
 adamDisk::~adamDisk()
 {
-    if (_media != nullptr)
-    {
-        delete _media;
-        _media = nullptr;
-    }
+    _media.reset();
 }
 
 void adamDisk::reset()
@@ -43,12 +39,10 @@ error_is_true adamDisk::mount(fnFile *f, const char *filename, uint32_t disksize
 
     Debug_printf("disk MOUNT %s\n", filename);
 
+    _read_only = !(access_mode & DISK_ACCESS_MODE_WRITE);
+
     // Destroy any existing MediaType
-    if (_media != nullptr)
-    {
-        delete _media;
-        _media = nullptr;
-    }
+    _media.reset();
 
     // Determine MediaType based on filename extension
     if (disk_type == MEDIATYPE_UNKNOWN && filename != nullptr)
@@ -58,27 +52,29 @@ error_is_true adamDisk::mount(fnFile *f, const char *filename, uint32_t disksize
     {
     case MEDIATYPE_DDP:
         device_active = true;
-        _media = new MediaTypeDDP();
+        _media = std::make_unique<MediaTypeDDP>();
         strcpy(_media->_disk_filename, filename);
         mt = _media->mount(f, disksize);
         break;
     case MEDIATYPE_DSK:
-        _media = new MediaTypeDSK();
+        _media = std::make_unique<MediaTypeDSK>();
         strcpy(_media->_disk_filename,filename);
-        mt = _media->mount(f, disksize);
-        device_active = true;
-        break;
-    case MEDIATYPE_ROM:
-        _media = new MediaTypeROM();
         mt = _media->mount(f, disksize);
         device_active = true;
         break;
     default:
         device_active = false;
+        fnio::fclose(f);
         break;
     }
 
-    RETURN_ERROR_IF(mt == MEDIATYPE_UNKNOWN);
+    if (mt == MEDIATYPE_UNKNOWN)
+    {
+        unmount();
+        RETURN_ERROR_AS_TRUE();
+    }
+
+    RETURN_SUCCESS_AS_FALSE();
 }
 
 void adamDisk::unmount()
@@ -88,8 +84,7 @@ void adamDisk::unmount()
     if (_media != nullptr)
     {
         _media->unmount();
-        delete _media;
-        _media = nullptr;
+        _media.reset();
         device_active = false;
     }
 }
@@ -135,7 +130,7 @@ void adamDisk::adamnet_control_send_block_num(const FujiAdamPacket &packet)
 
     Debug_printf("BLOCK: %lu\n", blockNum);
 
-    if (blockNum == 0xFACE)
+    if (blockNum == 0xFACE && !_read_only)
     {
         _media->format(NULL);
     }
@@ -160,9 +155,9 @@ void adamDisk::adamnet_control_send_block_data()
         return;
     }
 
-    if (is_config_device)
+    if (is_config_device || _read_only)
     {
-        Debug_printf("Refusing spurious write to read-only config device, block %lu\n", blockNum);
+        Debug_printf("Refusing write to read-only disk, block %lu\n", blockNum);
         blockNum = 0xFFFFFFFF;
         _media->_media_last_block = 0xFFFFFFFE;
         SYSTEM_BUS.transaction_error();
@@ -171,10 +166,15 @@ void adamDisk::adamnet_control_send_block_data()
 
     Debug_printf("Block Data Write\n");
 
-    _media->write(blockNum, false);
+    error_is_true result = _media->write(blockNum, false);
 
     blockNum = 0xFFFFFFFF;
     _media->_media_last_block = 0xFFFFFFFE;
+    if (result.is_error())
+    {
+        SYSTEM_BUS.transaction_error();
+        return;
+    }
     SYSTEM_BUS.transaction_success();
 }
 

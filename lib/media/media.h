@@ -8,6 +8,7 @@
 #include <memory>
 #include <memory_resource>
 #include <optional>
+#include <span>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -48,9 +49,18 @@ public:
     // channel (e.g. ROM save data) reports that capability itself.
     virtual bool isReadOnly() const = 0;
 
+    // The extension path ends in, dot included and in lower case, ignoring any
+    // query or fragment; nullopt if none.
+    static std::optional<std::string> fileExtension(const std::string &path);
+
     // The entry of extensions that path ends in, ignoring case; nullopt if none.
+    static std::optional<std::string> matchExtension(const std::string &path,
+                                                     std::span<const char *const> extensions);
     static std::optional<std::string> matchExtension(
-        const std::string &path, std::initializer_list<const char *> extensions);
+        const std::string &path, std::initializer_list<const char *> extensions)
+    {
+        return matchExtension(path, std::span(extensions.begin(), extensions.size()));
+    }
 
     // The same-named file beside path with extension, or in its other case; nullopt if none.
     static std::optional<std::string> findSibling(fujiHost *host, const std::string &path,
@@ -79,13 +89,6 @@ protected:
 # include "atari/diskTypeXex.h"
 #endif
 
-#ifdef BUILD_RS232
-# include "rs232/diskType.h"
-# include "rs232/diskTypeAltair.h"
-# include "rs232/diskTypeImg.h"
-# include "rs232/diskTypeIMD.h"
-#endif
-
 #ifdef BUILD_IEC
 # include "cbm/mediaType.h"
 # include "cbm/BlankImage.h"
@@ -95,7 +98,6 @@ protected:
 # include "adam/mediaType.h"
 # include "adam/mediaTypeDDP.h"
 # include "adam/mediaTypeDSK.h"
-# include "adam/mediaTypeROM.h"
 #endif
 
 #ifdef BUILD_LYNX
@@ -127,21 +129,6 @@ protected:
 #ifdef BUILD_RC2014
 # include "rc2014/mediaType.h"
 # include "rc2014/mediaTypeIMG.h"
-#endif
-
-#ifdef BUILD_COCO
-# include "drivewire/mediaType.h"
-# include "drivewire/mediaTypeDSK.h"
-# include "drivewire/mediaTypeMRM.h"
-# include "drivewire/mediaTypeVDK.h"
-# include "drivewire/mediaTypeCASDSK.h"
-#endif
-
-#ifdef NEW_TARGET
-# include "new/mediaType.h"
-# include "new/mediaTypeDDP.h"
-# include "new/mediaTypeDSK.h"
-# include "new/mediaTypeROM.h"
 #endif
 
 #ifdef BUILD_CX16

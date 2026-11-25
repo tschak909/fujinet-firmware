@@ -166,12 +166,39 @@ TEST_CASE("a DDP write lands in its block and reads back")
     check_closed_once(disk, file);
 }
 
-TEST_CASE("the config disk refuses writes")
+TEST_CASE("a DDP write past the end is refused")
+{
+    auto image = numbered_sectors(4, BLOCK_SIZE);
+    MemFile file(image);
+    TestDisk disk;
+    REQUIRE(disk.mount(&file, DDP_TEST_FILE, image.size(), DISK_ACCESS_MODE_WRITE)
+            .is_success());
+
+    CHECK(write_block(disk, 4, filled(BLOCK_SIZE, 0x77)) == Outcome::Error);
+    CHECK(file.contents() == image);
+    check_closed_once(disk, file);
+}
+
+TEST_CASE("a disk mounted read-only refuses writes")
 {
     auto image = numbered_sectors(4, BLOCK_SIZE);
     MemFile file(image);
     TestDisk disk;
     REQUIRE(disk.mount(&file, DDP_TEST_FILE, image.size(), DISK_ACCESS_MODE_READ)
+            .is_success());
+
+    CHECK(write_block(disk, 1, filled(BLOCK_SIZE, 0x77)) == Outcome::Error);
+    CHECK(file.contents() == image);
+    CHECK(read_block(disk, 1) == slice(image, BLOCK_SIZE, BLOCK_SIZE));
+    check_closed_once(disk, file);
+}
+
+TEST_CASE("the config disk refuses writes")
+{
+    auto image = numbered_sectors(4, BLOCK_SIZE);
+    MemFile file(image);
+    TestDisk disk;
+    REQUIRE(disk.mount(&file, DDP_TEST_FILE, image.size(), DISK_ACCESS_MODE_WRITE)
             .is_success());
     disk.is_config_device = true;
 
@@ -253,4 +280,45 @@ TEST_CASE("mounting over a disk closes the old image once")
     CHECK(second.closes == 0);
     CHECK(read_block(disk, 6) == slice(second_image, 6 * BLOCK_SIZE, BLOCK_SIZE));
     check_closed_once(disk, second);
+}
+
+TEST_CASE("a DDP under one block doesn't mount, and the drive is left inactive")
+{
+    std::vector<uint8_t> image(BLOCK_SIZE - 1, 0);
+    MemFile file(image);
+    TestDisk disk;
+
+    CHECK(disk.mount(&file, DDP_TEST_FILE, image.size(), DISK_ACCESS_MODE_READ).is_error());
+    CHECK_FALSE(disk.device_active);
+    CHECK(disk.mediatype() == MEDIATYPE_UNKNOWN);
+    CHECK(file.closes == 1);
+    CHECK_FALSE(file.usedAfterClose);
+}
+
+TEST_CASE("a DSK under one block doesn't mount, and the drive is left inactive")
+{
+    std::vector<uint8_t> image(BLOCK_SIZE - 1, 0);
+    MemFile file(image);
+    TestDisk disk;
+
+    CHECK(disk.mount(&file, DSK_TEST_FILE, image.size(), DISK_ACCESS_MODE_READ).is_error());
+    CHECK_FALSE(disk.device_active);
+    CHECK(disk.mediatype() == MEDIATYPE_UNKNOWN);
+    CHECK(file.closes == 1);
+    CHECK_FALSE(file.usedAfterClose);
+}
+
+TEST_CASE("an image with an unknown extension doesn't mount, and its image is closed")
+{
+    std::vector<uint8_t> image(BLOCK_SIZE, 0);
+    MemFile file(image);
+    TestDisk disk;
+
+    CHECK(disk.mount(&file, "adam_disk_test.xyz", image.size(), DISK_ACCESS_MODE_READ).is_error());
+    CHECK_FALSE(disk.device_active);
+    CHECK(disk.mediatype() == MEDIATYPE_UNKNOWN);
+    CHECK(file.closes == 1);
+    CHECK_FALSE(file.usedAfterClose);
+    disk.unmount();
+    CHECK(file.closes == 1);
 }

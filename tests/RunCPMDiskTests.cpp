@@ -55,6 +55,7 @@ struct CpmDisk
         cDrive = 0;
         userCode = 0;
         roVector = 0;
+        loginVector = 0;
         dmaAddr = dma_addr;
         // _error() waits for a key; this makes it return at once
         _cpm_stop_requested = true;
@@ -150,6 +151,32 @@ TEST_CASE("BDOS 35 sees records written before the file is closed")
     _GetFileSize(fcb_addr);
     CHECK(RAM[fcb_addr + 33] == 3);
     CHECK(RAM[fcb_addr + 34] == 0);
+}
+
+TEST_CASE("a short last record reads padded with ^Z")
+{
+    CpmDisk disk;
+    std::vector<uint8_t> bytes(BlkSZ + 5, 'B');
+    std::fill_n(bytes.begin(), BlkSZ, 'A');
+    write_host("TAIL.TXT", bytes);
+
+    set_fcb("TAIL", "TXT");
+    REQUIRE(_OpenFile(fcb_addr) == 0);
+    fill_dma(0);
+    CHECK(_ReadSeq(fcb_addr) == 0);
+    CHECK(dma_is('A'));
+
+    fill_dma(0);
+    CHECK(_ReadSeq(fcb_addr) == 0);
+    for (int idx = 0; idx < BlkSZ; ++idx)
+        CHECK(RAM[dma_addr + idx] == (idx < 5 ? 'B' : 0x1a));
+    CHECK(_ReadSeq(fcb_addr) == 1);
+
+    fill_dma(0);
+    set_record(1);
+    CHECK(_ReadRand(fcb_addr) == 0);
+    CHECK(RAM[dma_addr] == 'B');
+    CHECK(RAM[dma_addr + 5] == 0x1a);
 }
 
 TEST_CASE("a random read past the end returns 1 and leaves the file alone")
@@ -332,4 +359,36 @@ TEST_CASE("a write to a file opened for reading lands in the file")
     REQUIRE(bytes.size() == 2 * BlkSZ);
     CHECK(bytes[0] == 0x01);
     CHECK(bytes[BlkSZ] == 0x02);
+}
+
+TEST_CASE("a drive that was selected is not looked up again until it is logged out")
+{
+    CpmDisk disk;
+
+    REQUIRE(_SelectDisk(1) == 0x00);
+    fsys::remove_all(SD_ROOT "/CPM/A");
+    CHECK(_SelectDisk(1) == 0x00);
+
+    loginVector = 0;
+    CHECK(_SelectDisk(1) == 0xFF);
+}
+
+TEST_CASE("a host file without an 8.3 name is left out of a directory search")
+{
+    CpmDisk disk;
+    write_host("GOOD.TXT", {1});
+    write_host("TOOLONGNAME.TXT", {1});
+    write_host("A.LONGEXT", {1});
+    write_host("A.B.C", {1});
+    write_host(std::string(30, 'X') + ".TXT", {1});
+
+    set_fcb("????????", "???");
+    int hits = 0;
+    for (uint8_t result = _SearchFirst(fcb_addr, TRUE); result != 0xFF;
+         result = _SearchNext(fcb_addr, TRUE))
+    {
+        CHECK(std::string(reinterpret_cast<char *>(&RAM[dma_addr + 1]), 11) == "GOOD    TXT");
+        ++hits;
+    }
+    CHECK(hits == 1);
 }
