@@ -17,6 +17,7 @@
 #include "rom/ColecoROM.h"
 #include "rom/IntellicartROM.h"
 #include "rom/IntellivisionROM.h"
+#include "rom/MSXROM.h"
 #include "rom/NESROM.h"
 #include "rom/SegaMasterROM.h"
 #include "rom/StudioIIROM.h"
@@ -32,10 +33,11 @@ public:
     // Cartridges are tried first, strongest evidence first: a signature, a
     // mapper file, then the extension alone. Then the disks: an IMD header, a
     // JV1 size, an Altair size, and raw for anything else. A name alone can't
-    // tell an Altair .dsk, so it lists as unknown.
+    // tell a JV1 or Altair .dsk, so it lists as unknown.
     using Formats = MediaFormats<MEDIATYPE_UNKNOWN,
                                  MediaFormat<IntellicartROM, MEDIATYPE_ROM>,
                                  MediaFormat<NESROM, MEDIATYPE_ROM>,
+                                 MediaFormat<MSXROM, MEDIATYPE_ROM>,
                                  MediaFormat<IntellivisionROM, MEDIATYPE_ROM>,
                                  MediaFormat<Atari7800ROM, MEDIATYPE_ROM>,
                                  MediaFormat<StudioIIROM, MEDIATYPE_ROM>,
