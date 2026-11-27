@@ -1,13 +1,19 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
 
+#include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
 
+#include "Cartridge.h"
 #include "disk.h"
+#include "RS232ROMFormats.h"
 #include "romMountStubs.h"
 #include "fujiHost.h"
+#include "hash.h"
+#include "string_utils.h"
+#include "rom/MSXROMDatabase.h"
 
 namespace
 {
@@ -93,6 +99,16 @@ std::vector<fujiCommandID_t> commands()
     return sent;
 }
 
+// These tests don't link fujiDevice, so this copies its choice of cartridge or drive.
+error_is_true mount_file(rs232Disk &disk, fnFile *file, const char *filename, uint32_t size,
+                         disk_access_flags_t mode, fujiHost *host = nullptr)
+{
+    auto rom = RS232ROMFormats::open<ROMMedia>(filename, file, host);
+    if (rom)
+        return Cartridge(SYSTEM_BUS).mount(*rom);
+    return disk.mount(file, filename, size, mode, host);
+}
+
 // Whatever the outcome, every handle opened for the mount is closed exactly
 // once by the time the drive is unmounted.
 void check_closed_once(rs232Disk &disk, const MemFile &file)
@@ -121,6 +137,7 @@ void reset()
 {
     bus.reset();
     host_files.reset();
+    msx_rom_db.reset();
 }
 
 // An image of total bytes with the MSX cartridge ID "AB" at offset at.
@@ -145,15 +162,71 @@ std::vector<Window> params_of(fujiCommandID_t command)
     return all;
 }
 
-// Mounts image as filename and checks the mapper commands sit after the image
+// The SHA-1 of data as uppercase hex.
+std::string sha1_hex(const std::vector<uint8_t> &data)
+{
+    uint8_t digest[20];
+    CHECK(Hash::compute(Hash::Algorithm::SHA1, data.data(), data.size(), digest, sizeof(digest)) == 0);
+    return mstr::toHex(digest, sizeof(digest));
+}
+
+TEST_CASE("a hash stream fed uneven chunks matches the one-shot hash")
+{
+    auto data = make_image(1000);
+    for (auto algorithm : {Hash::Algorithm::MD5, Hash::Algorithm::SHA1, Hash::Algorithm::SHA256,
+                           Hash::Algorithm::SHA512})
+    {
+        size_t len = Hash::hash_length(algorithm, false);
+        uint8_t expected[64], actual[64];
+        REQUIRE(Hash::compute(algorithm, data.data(), data.size(), expected, len) == 0);
+
+        Hash::Stream stream(algorithm);
+        size_t offset = 0;
+        for (size_t chunk : {1, 7, 100, 0, 333, 559})
+        {
+            REQUIRE(stream.update(data.data() + offset, chunk).is_success());
+            offset += chunk;
+        }
+        REQUIRE(offset == data.size());
+        REQUIRE(stream.finish(actual, len).is_success());
+        CHECK(std::memcmp(actual, expected, len) == 0);
+    }
+}
+
+// A database line for image: its SHA-1 in lowercase, a tab, the type, CRLF.
+std::string db_line(const std::vector<uint8_t> &image, const char *type)
+{
+    std::string hash = sha1_hex(image);
+    for (char &ch : hash)
+        ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+    return hash + "\t" + type + "\r\n";
+}
+
+const std::string OTHER_DB_LINES =
+    "0000000000000000000000000000000000000000\tASCII8\r\n"
+    "\r\n"
+    "short\r\n";
+
+// Serves image's entry, listed as type, after some unrelated lines.
+void set_db(const std::vector<uint8_t> &image, const char *type)
+{
+    msx_rom_db.hasDb = true;
+    msx_rom_db.text = OTHER_DB_LINES + db_line(image, type);
+}
+
+// Mounts image as filename, listed in the database as dbType if given, and
+// checks the mapper commands sit after the image
 // blocks and before CLOSE, with the image bytes unchanged.
 void check_msx_mount(const char *filename, const std::vector<uint8_t> &image,
-                     const std::vector<Window> &windows, const std::vector<Window> &mirrors)
+                     const std::vector<Window> &windows, const std::vector<Window> &mirrors,
+                     const char *dbType = nullptr)
 {
     reset();
+    if (dbType != nullptr)
+        set_db(image, dbType);
     MemFile file(image);
     rs232Disk disk;
-    CHECK(disk.mount(&file, filename, image.size(), DISK_ACCESS_MODE_READ).is_success());
+    CHECK(mount_file(disk, &file, filename, image.size(), DISK_ACCESS_MODE_READ).is_success());
     check_closed_once(disk, file);
 
     REQUIRE(bus.sent.size() >= 4);
@@ -162,7 +235,7 @@ void check_msx_mount(const char *filename, const std::vector<uint8_t> &image,
     CHECK(bus.sent.back().command == CMD::DBC_SEGMENT_CLOSE);
     CHECK(bus.sent.back().payload.empty());
 
-    size_t blocks = (image.size() + rs232Disk::ROM_BLOCK_SIZE - 1) / rs232Disk::ROM_BLOCK_SIZE;
+    size_t blocks = (image.size() + Cartridge::BLOCK_SIZE - 1) / Cartridge::BLOCK_SIZE;
     std::vector<fujiCommandID_t> expected{CMD::DBC_SEGMENT_OPEN};
     expected.insert(expected.end(), blocks, CMD::DBC_SEGMENT_WRITE);
     expected.push_back(CMD::DBC_MAPPER_SET_INFO);
@@ -189,11 +262,11 @@ void systemBus::addDevice(virtualDevice *, fujiDeviceID_t) {}
 TEST_CASE("a ROM image goes to DBC stream 0 in 512-byte blocks between OPEN and CLOSE")
 {
     reset();
-    auto image = make_image(rs232Disk::ROM_BLOCK_SIZE * 2 + 88);
+    auto image = make_image(Cartridge::BLOCK_SIZE * 2 + 88);
     MemFile file(image);
 
     rs232Disk disk;
-    CHECK(disk.mount(&file, ROM_TEST_FILE, image.size(), DISK_ACCESS_MODE_READ)
+    CHECK(mount_file(disk, &file, ROM_TEST_FILE, image.size(), DISK_ACCESS_MODE_READ)
           .is_success());
     check_closed_once(disk, file);
 
@@ -203,8 +276,8 @@ TEST_CASE("a ROM image goes to DBC stream 0 in 512-byte blocks between OPEN and 
     CHECK(bus.sent[0].command == CMD::NET_OPEN);
     CHECK(bus.sent[0].params == std::vector<uint32_t>{0});
     CHECK(bus.sent[0].payload == open_header(0, image.size()));
-    CHECK(bus.sent[1].payload.size() == rs232Disk::ROM_BLOCK_SIZE);
-    CHECK(bus.sent[2].payload.size() == rs232Disk::ROM_BLOCK_SIZE);
+    CHECK(bus.sent[1].payload.size() == Cartridge::BLOCK_SIZE);
+    CHECK(bus.sent[2].payload.size() == Cartridge::BLOCK_SIZE);
     CHECK(bus.sent[3].payload.size() == 88);
     CHECK(bus.sent[4].command == CMD::NET_CLOSE);
     CHECK(bus.sent[4].payload.empty());
@@ -258,7 +331,7 @@ TEST_CASE("each console's image mounts and goes over unchanged")
         MemFile file(entry.image);
 
         rs232Disk disk;
-        CHECK(disk.mount(&file, entry.filename, entry.image.size(), DISK_ACCESS_MODE_READ)
+        CHECK(mount_file(disk, &file, entry.filename, entry.image.size(), DISK_ACCESS_MODE_READ)
               .is_success());
         CHECK(stream_bytes(0) == std::string(entry.image.begin(), entry.image.end()));
         check_closed_once(disk, file);
@@ -273,7 +346,7 @@ TEST_CASE("an Intellivision .int without a .cfg boots with the default map")
     fujiHost host;
 
     rs232Disk disk;
-    CHECK(disk.mount(&file, "cart.int", image.size(), DISK_ACCESS_MODE_READ, &host)
+    CHECK(mount_file(disk, &file, "cart.int", image.size(), DISK_ACCESS_MODE_READ, &host)
           .is_success());
     CHECK(stream_bytes(1).empty());
     CHECK(stream_bytes(0) == std::string(image.begin(), image.end()));
@@ -284,7 +357,7 @@ TEST_CASE("an Intellivision .int without a .cfg boots with the default map")
 TEST_CASE("a .cfg sibling goes to stream 1 before the image")
 {
     const std::string map = "[mapping]\n$0000 - $1FFF = $5000\n";
-    auto image = make_image(rs232Disk::ROM_BLOCK_SIZE + 2);
+    auto image = make_image(Cartridge::BLOCK_SIZE + 2);
 
     for (const char *map_file : {MAP_TEST_FILE, MAP_TEST_FILE_UPPER})
     {
@@ -295,7 +368,7 @@ TEST_CASE("a .cfg sibling goes to stream 1 before the image")
         fujiHost host;
 
         rs232Disk disk;
-        CHECK(disk.mount(&file, ROM_BIN_TEST_FILE, image.size(), DISK_ACCESS_MODE_READ, &host)
+        CHECK(mount_file(disk, &file, ROM_BIN_TEST_FILE, image.size(), DISK_ACCESS_MODE_READ, &host)
               .is_success());
         CHECK(host_files.opened.size() == 1);
         check_closed_once(disk, file);
@@ -325,7 +398,7 @@ TEST_CASE("an Intellivision image with a .cfg may be any even size")
 
         rs232Disk disk;
         bool even = size % 2 == 0;
-        CHECK((disk.mount(&file, ROM_BIN_TEST_FILE, image.size(), DISK_ACCESS_MODE_READ, &host)
+        CHECK((mount_file(disk, &file, ROM_BIN_TEST_FILE, image.size(), DISK_ACCESS_MODE_READ, &host)
                .is_success() || !even));
         CHECK(stream_bytes(0) == (even ? std::string(image.begin(), image.end()) : ""));
         check_closed_once(disk, file);
@@ -340,7 +413,7 @@ TEST_CASE("without a host the .cfg sibling is not looked for")
     MemFile file(image);
 
     rs232Disk disk;
-    CHECK(disk.mount(&file, ROM_TEST_FILE, image.size(), DISK_ACCESS_MODE_READ)
+    CHECK(mount_file(disk, &file, ROM_TEST_FILE, image.size(), DISK_ACCESS_MODE_READ)
           .is_success());
     CHECK(commands() == std::vector<fujiCommandID_t>{
               CMD::NET_OPEN, CMD::NET_WRITE, CMD::NET_CLOSE});
@@ -355,7 +428,7 @@ TEST_CASE("an empty ROM image mounts raw without touching the bus")
     MemFile file({});
 
     rs232Disk disk;
-    CHECK(disk.mount(&file, ROM_TEST_FILE, 0, DISK_ACCESS_MODE_READ).is_success());
+    CHECK(mount_file(disk, &file, ROM_TEST_FILE, 0, DISK_ACCESS_MODE_READ).is_success());
     CHECK(bus.sent.empty());
     CHECK(disk.device_active);
     check_closed_once(disk, file);
@@ -363,7 +436,7 @@ TEST_CASE("an empty ROM image mounts raw without touching the bus")
 
 TEST_CASE("a refused or unanswered OPEN fails the mount and sends nothing more")
 {
-    auto image = make_image(rs232Disk::ROM_BLOCK_SIZE);
+    auto image = make_image(Cartridge::BLOCK_SIZE);
     for (Reply reply : {Reply::Nak, Reply::None})
     {
         CAPTURE((int)reply);
@@ -372,7 +445,7 @@ TEST_CASE("a refused or unanswered OPEN fails the mount and sends nothing more")
         MemFile file(image);
 
         rs232Disk disk;
-        CHECK(disk.mount(&file, ROM_TEST_FILE, image.size(), DISK_ACCESS_MODE_READ)
+        CHECK(mount_file(disk, &file, ROM_TEST_FILE, image.size(), DISK_ACCESS_MODE_READ)
               .is_error());
         CHECK(commands() == std::vector<fujiCommandID_t>{CMD::NET_OPEN});
         check_nothing_mounted(disk, file);
@@ -382,7 +455,7 @@ TEST_CASE("a refused or unanswered OPEN fails the mount and sends nothing more")
 
 TEST_CASE("a refused or unanswered block sends an aborting CLOSE")
 {
-    auto image = make_image(rs232Disk::ROM_BLOCK_SIZE * 3);
+    auto image = make_image(Cartridge::BLOCK_SIZE * 3);
     for (Reply reply : {Reply::Nak, Reply::None})
     {
         CAPTURE((int)reply);
@@ -391,7 +464,7 @@ TEST_CASE("a refused or unanswered block sends an aborting CLOSE")
         MemFile file(image);
 
         rs232Disk disk;
-        CHECK(disk.mount(&file, ROM_TEST_FILE, image.size(), DISK_ACCESS_MODE_READ)
+        CHECK(mount_file(disk, &file, ROM_TEST_FILE, image.size(), DISK_ACCESS_MODE_READ)
               .is_error());
         REQUIRE(bus.sent.size() == 4);
         CHECK(bus.sent[3].command == CMD::NET_CLOSE);
@@ -409,7 +482,7 @@ TEST_CASE("a refused CLOSE fails the mount")
     MemFile file(image);
 
     rs232Disk disk;
-    CHECK(disk.mount(&file, ROM_TEST_FILE, image.size(), DISK_ACCESS_MODE_READ)
+    CHECK(mount_file(disk, &file, ROM_TEST_FILE, image.size(), DISK_ACCESS_MODE_READ)
           .is_error());
     check_nothing_mounted(disk, file);
     check_closed_once(disk, file);
@@ -425,7 +498,7 @@ TEST_CASE("a failed memory map push leaves the image unsent")
     fujiHost host;
 
     rs232Disk disk;
-    CHECK(disk.mount(&file, ROM_TEST_FILE, image.size(), DISK_ACCESS_MODE_READ, &host)
+    CHECK(mount_file(disk, &file, ROM_TEST_FILE, image.size(), DISK_ACCESS_MODE_READ, &host)
           .is_error());
     CHECK(commands() == std::vector<fujiCommandID_t>{CMD::NET_OPEN});
     CHECK(bus.sent[0].payload == open_header(1, 10));
@@ -442,11 +515,11 @@ TEST_CASE("a second ROM mount sends the new image and closes each handle once")
 
     rs232Disk disk;
     reset();
-    REQUIRE(disk.mount(&first_file, ROM_TEST_FILE, first.size(), DISK_ACCESS_MODE_READ)
+    REQUIRE(mount_file(disk, &first_file, ROM_TEST_FILE, first.size(), DISK_ACCESS_MODE_READ)
             .is_success());
 
     reset();
-    CHECK(disk.mount(&second_file, ROM_TEST_FILE, second.size(), DISK_ACCESS_MODE_READ)
+    CHECK(mount_file(disk, &second_file, ROM_TEST_FILE, second.size(), DISK_ACCESS_MODE_READ)
           .is_success());
     CHECK(stream_bytes(0) == std::string(second.begin(), second.end()));
     check_closed_once(disk, second_file);
@@ -495,7 +568,7 @@ TEST_CASE("an image its extension's format doesn't recognize mounts raw")
         MemFile file(entry.image);
 
         rs232Disk disk;
-        CHECK(disk.mount(&file, entry.filename, entry.image.size(), DISK_ACCESS_MODE_READ)
+        CHECK(mount_file(disk, &file, entry.filename, entry.image.size(), DISK_ACCESS_MODE_READ)
               .is_success());
         CHECK(bus.sent.empty());
         CHECK(disk.device_active);
@@ -521,7 +594,7 @@ TEST_CASE("a 5200, 7800, SMS, or ColecoVision image sends the .cfg beside it")
         fujiHost host;
 
         rs232Disk disk;
-        CHECK(disk.mount(&file, entry.filename, entry.image.size(), DISK_ACCESS_MODE_READ,
+        CHECK(mount_file(disk, &file, entry.filename, entry.image.size(), DISK_ACCESS_MODE_READ,
                          &host).is_success());
         REQUIRE(!bus.sent.empty());
         CHECK(bus.sent[0].payload == open_header(1, map.size()));
@@ -549,7 +622,7 @@ TEST_CASE("other consoles' images don't send the .cfg beside them")
         fujiHost host;
 
         rs232Disk disk;
-        CHECK(disk.mount(&file, entry.filename, entry.image.size(), DISK_ACCESS_MODE_READ,
+        CHECK(mount_file(disk, &file, entry.filename, entry.image.size(), DISK_ACCESS_MODE_READ,
                          &host).is_success());
         CHECK(stream_bytes(1).empty());
         CHECK(stream_bytes(0) == std::string(entry.image.begin(), entry.image.end()));
@@ -599,13 +672,123 @@ TEST_CASE("mapper tags are case-insensitive and pick their own layouts")
                     {{0x0000, 0x4000, 0x4000}, {0xC000, 0x10000, 0x8000}});
 }
 
+TEST_CASE("an untagged MSX ROM listed as KonamiSCC gets the SCC layout")
+{
+    check_msx_mount("King's Valley 2.rom", msx_image(128_kB),
+                    {{0x5000, 0x5800, 0x4000, 0x6000}, {0x7000, 0x7800, 0x6000, 0x8000},
+                     {0x9000, 0x9800, 0x8000, 0xA000}, {0xB000, 0xB800, 0xA000, 0xC000}},
+                    {{0x0000, 0x4000, 0x8000}, {0xC000, 0x10000, 0x4000}}, "KonamiSCC");
+}
+
+TEST_CASE("a filename tag overrides the database")
+{
+    check_msx_mount("game [ASCII16].rom", msx_image(64_kB),
+                    {{0x6000, 0x6800, 0x4000, 0x8000}, {0x7000, 0x7800, 0x8000, 0xC000}}, {},
+                    "Konami");
+}
+
+TEST_CASE("database types pick ASCII8, ASCII16, and Konami layouts")
+{
+    check_msx_mount("a.rom", msx_image(64_kB),
+                    {{0x6000, 0x6800, 0x4000, 0x6000}, {0x6800, 0x7000, 0x6000, 0x8000},
+                     {0x7000, 0x7800, 0x8000, 0xA000}, {0x7800, 0x8000, 0xA000, 0xC000}}, {},
+                    "ASCII8");
+    check_msx_mount("a.rom", msx_image(64_kB),
+                    {{0x6000, 0x6800, 0x4000, 0x8000}, {0x7000, 0x7800, 0x8000, 0xC000}}, {},
+                    "ASCII16");
+    check_msx_mount("a.rom", msx_image(64_kB),
+                    {{0, 0, 0x4000, 0x6000}, {0x6000, 0x8000, 0x6000, 0x8000},
+                     {0x8000, 0xA000, 0x8000, 0xA000}, {0xA000, 0xC000, 0xA000, 0xC000}},
+                    {{0x0000, 0x4000, 0x4000}, {0xC000, 0x10000, 0x8000}}, "Konami");
+}
+
+TEST_CASE("database entries that place a plain ROM at a page")
+{
+    check_msx_mount("a.rom", msx_image(16_kB), {{0, 0, 0x8000, 0xC000}}, {}, "Page2");
+    check_msx_mount("a.rom", msx_image(32_kB),
+                    {{0, 0, 0x8000, 0xC000}, {0, 0, 0xC000, 0x10000}}, {}, "0x8000");
+    check_msx_mount("a.rom", msx_image(32_kB),
+                    {{0, 0, 0x0000, 0x4000}, {0, 0, 0x4000, 0x8000}}, {}, "0x0000");
+    check_msx_mount("a.rom", msx_image(48_kB),
+                    {{0, 0, 0x0000, 0x4000}, {0, 0, 0x4000, 0x8000},
+                     {0, 0, 0x8000, 0xC000}, {0, 0, 0xC000, 0x10000}}, {}, "0x0000");
+}
+
+TEST_CASE("database types that need no mapper keep the plain layout")
+{
+    check_msx_mount("a.rom", msx_image(16_kB), {{0, 0, 0x4000, 0x8000}}, {}, "Mirrored");
+    check_msx_mount("a.rom", msx_image(32_kB),
+                    {{0, 0, 0x4000, 0x8000}, {0, 0, 0x8000, 0xC000}}, {}, "GameMaster2");
+    check_msx_mount("a.rom", msx_image(32_kB),
+                    {{0, 0, 0x4000, 0x8000}, {0, 0, 0x8000, 0xC000}}, {}, "ascii8");
+}
+
+TEST_CASE("no database, or an image it doesn't list, keeps the plain layout")
+{
+    check_msx_mount("a.rom", msx_image(16_kB), {{0, 0, 0x4000, 0x8000}}, {});
+
+    auto image = msx_image(16_kB);
+    auto other = msx_image(32_kB);
+    reset();
+    set_db(other, "Page2");
+    MemFile file(image);
+    rs232Disk disk;
+    CHECK(mount_file(disk, &file, "a.rom", image.size(), DISK_ACCESS_MODE_READ)
+          .is_success());
+    CHECK(params_of(CMD::DBC_MAPPER_ADD_WINDOW) == std::vector<Window>{{0, 0, 0x4000, 0x8000}});
+}
+
+static std::optional<std::string> lookup_in(const std::string &text, const std::string &hash)
+{
+    FILE *db = tmpfile();
+    REQUIRE(db != nullptr);
+    fwrite(text.data(), 1, text.size(), db);
+    rewind(db);
+    auto type = msx_rom_db_lookup(db, hash);
+    fclose(db);
+    return type;
+}
+
+TEST_CASE("the database lookup ignores case and line endings")
+{
+    const std::string hash = "0123456789ABCDEF0123456789ABCDEF01234567";
+    const std::string lower = "0123456789abcdef0123456789abcdef01234567";
+    CHECK(lookup_in(lower + "\tKonami\r\n", hash) == "Konami");
+    CHECK(lookup_in(hash + "\tKonami\n", lower) == "Konami");
+    CHECK(lookup_in(hash + "\tKonami", hash) == "Konami");
+    CHECK(lookup_in("x\n" + hash + "\tASCII8  \r\n", hash) == "ASCII8");
+}
+
+TEST_CASE("the database lookup skips malformed lines")
+{
+    const std::string hash = "0123456789ABCDEF0123456789ABCDEF01234567";
+    CHECK_FALSE(lookup_in("", hash).has_value());
+    CHECK_FALSE(lookup_in(hash + " Konami\n", hash).has_value());
+    CHECK_FALSE(lookup_in(hash + "\t\n", hash).has_value());
+    CHECK_FALSE(lookup_in("\n\r\nabc\n", hash).has_value());
+    CHECK_FALSE(lookup_in(hash + "\tKonami\n", "0123").has_value());
+    CHECK(lookup_in("\n" + hash.substr(0, 39) + "\n" + hash + "\tKonami\n", hash) == "Konami");
+}
+
+TEST_CASE("an overlong database line is discarded without desyncing")
+{
+    const std::string hash = "0123456789ABCDEF0123456789ABCDEF01234567";
+    // The overlong line has the wanted hash and a tab, but isn't a valid entry;
+    // its tail looks like one.
+    std::string text = hash + "\t" + std::string(300, 'x') + "\n";
+    text += std::string(100, 'y') + hash + "\tASCII16\n";
+    CHECK_FALSE(lookup_in(text, hash).has_value());
+    CHECK(lookup_in(text + hash + "\tKonami\n", hash) == "Konami");
+    CHECK(lookup_in(std::string(127, 'z') + "\n" + hash + "\tKonami\n", hash) == "Konami");
+}
+
 TEST_CASE("a .rom without the MSX cartridge ID is not taken as MSX")
 {
     reset();
     auto image = make_image(16_kB);
     MemFile file(image);
     rs232Disk disk;
-    CHECK(disk.mount(&file, "game [KonamiSCC].rom", image.size(), DISK_ACCESS_MODE_READ)
+    CHECK(mount_file(disk, &file, "game [KonamiSCC].rom", image.size(), DISK_ACCESS_MODE_READ)
           .is_success());
     CHECK(params_of(CMD::DBC_MAPPER_ADD_WINDOW).empty());
     CHECK(params_of(CMD::DBC_MAPPER_SET_INFO).empty());
@@ -616,14 +799,14 @@ TEST_CASE("a refused mapper window sends an aborting CLOSE and fails the mount")
 {
     auto image = msx_image(16_kB);
     reset();
-    size_t blocks = 16_kB / rs232Disk::ROM_BLOCK_SIZE;
+    size_t blocks = 16_kB / Cartridge::BLOCK_SIZE;
     // OPEN, the blocks, SET_INFO, then the window
     bus.replies.assign(1 + blocks + 1, Reply::Ack);
     bus.replies.push_back(Reply::Nak);
     MemFile file(image);
 
     rs232Disk disk;
-    CHECK(disk.mount(&file, "game.rom", image.size(), DISK_ACCESS_MODE_READ).is_error());
+    CHECK(mount_file(disk, &file, "game.rom", image.size(), DISK_ACCESS_MODE_READ).is_error());
     REQUIRE(bus.sent.size() == blocks + 4);
     CHECK(bus.sent.back().command == CMD::DBC_SEGMENT_CLOSE);
     CHECK(bus.sent.back().payload == std::string(1, '\x01'));
